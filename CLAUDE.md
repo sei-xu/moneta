@@ -2,6 +2,14 @@
 
 Personal finance management app. **Current phase: backend complete** — Full Supabase schema with categories, audit logging, and analytics. Telegram ingestion bot functional (122+ pending receipts, 109+ processed expenses). Ready for Edge Function enhancements and app UI. The data model is defined by the ERD in `docs/pipeline-ia-recibos.md` and the migrations under `supabase/migrations/`.
 
+## Build, lint and test commands
+
+There is no `package.json`, no build step, no linter and no test suite in this repo — don't invent `npm run` commands, none exist:
+
+- **Edge Functions** (`supabase/functions/*/index.ts`, Deno): deployed straight to Supabase with `supabase functions deploy <name>` (Supabase CLI, project must be linked via `supabase link`). No local build or bundling step; no unit tests — verification is manual, by invoking the deployed function or reading logs (`supabase functions logs <name>`).
+- **Migrations** (`supabase/migrations/*.sql`): applied either by running the file's SQL directly in the Supabase dashboard's SQL Editor, in numeric filename order (see `supabase/README.md`), or via `supabase db push --linked` with the CLI. No `Down` migration convention here — this is a separate repo from Ḫprj's own `migrations/` and doesn't follow node-pg-migrate's Up/Down format.
+- No TypeScript project config (`tsconfig.json`) exists, so there is no repo-wide typecheck command either — Deno's own type checking happens implicitly when a function is deployed or run.
+
 ## Conventions
 
 - Commit messages in English.
