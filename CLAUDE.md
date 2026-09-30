@@ -22,3 +22,7 @@ Personal finance management app. Current phase: pre-app groundwork — Supabase 
 - All tables have RLS enabled with no policies (access via service_role only) until the app has auth.
 - The `receipts` bucket is private; store file paths in the DB, generate signed URLs on read.
 - `expenses.category_id` intentionally has no FK yet — the constraint is added when the `categories` table is created.
+
+## Versão
+
+O `package.json` da raiz existe **só** para guardar `version` — o Ḫprj lê a versão dali e bumpa a cada item mergeado (mudança só de docs = patch). Não tem scripts nem dependências; não rode `npm install` nem invente comandos `npm run`. O repositório continua sem build, lint ou suíte de testes.
