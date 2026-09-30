@@ -12,6 +12,8 @@ Edge Function que recebe o webhook do Telegram e faz a ingestão: valida o remet
 | **Resposta a uma pergunta do worker** | A resposta é anexada ao `raw_input` e a pendência volta para a fila de processamento |
 | **`/pendencias`** (ou "alguma pendência?") | Mostra a situação da fila: aguardando, esperando resposta, com erro |
 | **`/processar`** (ou "processar agora") | Dispara o worker imediatamente, sem esperar o cron, e responde o resultado da rodada |
+| **`/relatorio`** | Mostra o último relatório da análise (headline + conteúdo completo) |
+| **`/analisar`** | Roda a análise do período na hora, sem esperar o cron semanal |
 | **Toque em botão** (pergunta de duplicata) | Descarta a pendência ou registra mesmo assim (usando os dados já extraídos, sem nova chamada de IA) |
 | Outros (áudio, sticker...) | Ignorado |
 
@@ -24,7 +26,7 @@ Mensagens de qualquer chat fora da allowlist são ignoradas silenciosamente.
 > ```sh
 > curl "https://api.telegram.org/bot<TOKEN>/setMyCommands" \
 >   -H "Content-Type: application/json" \
->   -d '{"commands":[{"command":"pendencias","description":"Situação da fila de recibos"},{"command":"processar","description":"Processar a fila agora"}]}'
+>   -d '{"commands":[{"command":"pendencias","description":"Situação da fila de recibos"},{"command":"processar","description":"Processar a fila agora"},{"command":"revisar","description":"Revisar pendências"},{"command":"relatorio","description":"Último relatório de análise"},{"command":"analisar","description":"Analisar o período agora"}]}'
 > ``` A allowlist aceita **mais de um usuário**: basta listar os `chat_id`s separados por vírgula no secret `TELEGRAM_ALLOWED_CHAT_IDS` (ex.: `111111,222222`). Cada pessoa autorizada conversa com o mesmo bot e os recibos caem todos no mesmo banco.
 
 ## Configuração (uma vez)

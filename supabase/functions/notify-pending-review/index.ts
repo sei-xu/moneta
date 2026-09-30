@@ -3,10 +3,15 @@
 // Runs daily via pg_cron to remind user about old pending_expenses
 // that haven't been reviewed yet.
 //
+// Authenticated by the x-worker-secret header, like the other workers — so
+// redeploying this also requires re-running the cron schedule in
+// 20260930000003_schedule_analysis_jobs.sql, which sends that header.
+//
 // Deploy: supabase functions deploy notify-pending-review --no-verify-jwt
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 
+const WORKER_SECRET = Deno.env.get("WORKER_SECRET")!;
 const BOT_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN")!;
 const TELEGRAM_CHAT_ID = Deno.env.get("TELEGRAM_ALLOWED_CHAT_IDS")!.split(",")[0].trim();
 
@@ -33,9 +38,9 @@ async function notifyPendingReview() {
   const oneDayAgo = new Date();
   oneDayAgo.setUTCDate(oneDayAgo.getUTCDate() - 1);
 
-  const { data: pending, error } = await supabase
+  const { count: matched, error } = await supabase
     .from("pending_expenses")
-    .select("id, count")
+    .select("id", { count: "exact", head: true })
     .in("status", ["pending", "waiting_user"])
     .lt("created_at", oneDayAgo.toISOString());
 
@@ -44,7 +49,7 @@ async function notifyPendingReview() {
     return { error: error.message };
   }
 
-  const count = pending?.length ?? 0;
+  const count = matched ?? 0;
   if (count === 0) {
     return { notified: false, reason: "no old pending expenses" };
   }
@@ -57,7 +62,11 @@ async function notifyPendingReview() {
   return { notified: true, count };
 }
 
-Deno.serve(async () => {
+Deno.serve(async (req) => {
+  if (req.headers.get("x-worker-secret") !== WORKER_SECRET) {
+    return new Response("unauthorized", { status: 401 });
+  }
+
   try {
     const result = await notifyPendingReview();
     return Response.json(result);

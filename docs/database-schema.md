@@ -18,7 +18,6 @@ payment_method_id (uuid) FK → payment_methods - how it was paid
 source (text) - origin: 'ai_pipeline', 'user_manual', etc.
 notes (text) - additional details
 created_at (timestamptz) - insertion time
-updated_at (timestamptz) - last modification
 ```
 
 ### `expense_items`
@@ -31,7 +30,6 @@ description (text) - item name/description
 quantity (numeric) - amount purchased
 unit_price (numeric) - price per unit
 total (numeric) - subtotal for this item
-created_at (timestamptz)
 ```
 
 ### `pending_expenses`
@@ -127,6 +125,45 @@ notes (text) - user's explanation for the correction
 created_at (timestamptz)
 resolved_at (timestamptz) - when feedback was actioned (NULL = pending)
 linked_audit_log_id (uuid) FK → audit_log - when the feedback was applied
+```
+
+## Analysis & Reports
+
+### `reports`
+Reports produced by the scheduled analysis worker (`analyze-expenses`).
+
+```sql
+id (uuid) primary key
+period_start (date) - first day of the analysed period
+period_end (date) - last day of the analysed period
+report_type (text) - 'weekly' (scheduled run) or 'followup' (scheduled_analyses item)
+headline (text) - one-sentence summary of the period
+changes (jsonb) - what moved against the 4-week baseline
+consistencies (jsonb) - patterns that held
+taxonomy_notes (jsonb) - candidate behaviour tags / categories (read by the user, not auto-applied)
+forward_looking (jsonb) - items to revisit; those with revisit_in_days become scheduled_analyses
+full_content (text) - the full report in markdown
+notification_decision (notification_decision_type) - 'silent', 'report_ready' or 'observation'
+model_notes (text) - data limitations the model flagged
+model_used (text) - provider/model that produced it
+created_at (timestamptz)
+```
+
+A partial unique index on `(period_start, period_end) where report_type = 'weekly'` makes a
+re-run of the same week an upsert instead of a duplicate.
+
+### `scheduled_analyses`
+Follow-ups a report scheduled for itself; polled hourly.
+
+```sql
+id (uuid) primary key
+run_at (timestamptz) - when the follow-up becomes due
+prompt (text) - the question the previous report wrote
+status (text) - 'pending', 'completed', 'error', 'cancelled'
+source_report_id (uuid) FK → reports - the report that requested it
+report_id (uuid) FK → reports - the report it produced
+error_message (text)
+created_at (timestamptz)
 ```
 
 ## Analytics Views
@@ -237,6 +274,17 @@ p_merchant, p_limit
 returns: table (category_id, category_name, usage_count, last_used)
 ```
 
+### `get_analysis_context(date, date)`
+Pre-aggregated period context for the analysis prompt. This is what keeps the language model out
+of SQL: it receives the result of this call and nothing else.
+
+```sql
+p_period_start, p_period_end
+returns: jsonb {period, totals, by_category, top_merchants, by_payment_method, queue}
+```
+Category totals are paired with a `prior_4w_weekly_avg` baseline (the four weeks before the
+period, averaged per week) and the resulting `delta_vs_avg`.
+
 ### `log_audit(...)`
 Insert audit log entry (for Edge Functions).
 
@@ -290,8 +338,9 @@ All tables have RLS enabled with **no policies** (restrictive by default):
 - **`planned_expenses`** — gastos futuros previstos (parcelas, assinaturas), com `expected_at`, `installment_number`/`installments_total` e `resolved_expense_id` quando efetivado
 - **`installments`** — parcelas individuais de uma `expense`, com `due_at` e `paid`
 - **`settings`** — configurações chave/valor (ex.: orçamento por categoria)
-- **`reports`** — relatórios da análise semanal (Kimi), com `notification_decision` (`silent` / `report_ready` / `observation`)
-- **`scheduled_analyses`** — follow-ups agendados pela própria análise anterior (`forward_looking`)
+
+> `reports` e `scheduled_analyses` saíram desta lista: foram migradas em
+> `20260930000001` — ver [Analysis & Reports](#analysis--reports).
 
 Também previstas em `expenses` (ainda não migradas): `original_amount`/`original_currency` (para
 gastos em moeda estrangeira), `installment_number`/`installments_total`, `is_gift`.

@@ -11,8 +11,8 @@
 | **Edge Functions - Processamento** | ✅ Operacional | 90% |
 | **Integração com Categorias** | 🔄 Em Progresso | 70% |
 | **Comandos Telegram (`/revisar`)** | 🔄 Em Progresso | 80% |
+| **Análise Semanal e Relatórios** | ✅ Implementado | 100% |
 | **App UI** | 📋 Planejado | 0% |
-| **Análise Semanal (Kimi)** | 📋 Planejado | 0% |
 
 ## Banco de Dados: ✅ COMPLETO
 
@@ -76,6 +76,18 @@ fallback pós-parse hoje).
 ### `notify-pending-review` (✅ Implementado)
 - ✅ Roda diariamente via `pg_cron`
 - ✅ Notifica o usuário sobre `pending_expenses` com mais de 1 dia sem revisão
+- ✅ Corrigido: a consulta selecionava uma coluna `count` inexistente (PostgREST 42703) e o
+  agendamento de `20260724000011` usava GUCs nunca definidos — o lembrete não saía
+
+### `analyze-expenses` (✅ Implementado)
+- ✅ Modo `weekly` (segundas 12:00 UTC) e modo `followups` (poll horário)
+- ✅ `get_analysis_context()` pré-agrega o período — o modelo nunca roda SQL
+- ✅ JSON estruturado validado antes de virar linha em `reports`
+- ✅ `notification_decision` governa o envio no Telegram (`silent` não manda nada)
+- ✅ `forward_looking` com `revisit_in_days` vira `scheduled_analyses`
+- ✅ Provedor configurável: Gemini (default, free tier) ou Kimi (opt-in, pago)
+- ✅ Comandos `/relatorio` e `/analisar` no bot
+- ⏳ Falta: promover `taxonomy_notes` a `behavior_tags`/`categories` candidatas
 
 ## Arquitetura Decidida: Edge Functions (não FastAPI)
 
@@ -97,15 +109,15 @@ fallback pós-parse hoje).
 | Banco | Supabase | Supabase ✅ |
 | Telegram | Webhook → DB → Bot | Webhook → Edge Function |
 | Agendamento | Cron externo (APScheduler) | `pg_cron` + Edge Function |
-| AI | Gemini + Kimi | Gemini (Kimi planejado p/ análise) |
+| AI | Gemini + Kimi | Gemini por padrão; Kimi opt-in na análise |
 
 Os endpoints e fluxos do plano original (FastAPI + Kimi) ficam documentados em
 [`docs/api-endpoints-futuro.md`](api-endpoints-futuro.md) e
 [`docs/automacoes-futuras.md`](automacoes-futuras.md) como referência, mesmo sem estarem
 implementados na arquitetura atual.
 
-**Resultado**: backend 100% funcional, integração de categorias em andamento. Frontend pendente.
-Análise semanal (Kimi) planejada para depois.
+**Resultado**: backend 100% funcional, integração de categorias em andamento, análise semanal
+implementada. Frontend pendente.
 
 ## Próximas Prioridades
 
@@ -121,7 +133,7 @@ Análise semanal (Kimi) planejada para depois.
 - [x] Callback `corrigir` — pede e aplica valor corrigido
 - [ ] Testar o fluxo completo (ver → classificar → confirmar) em produção
 
-### 3. Construir App UI (depois)
+### 3. Construir App UI (próximo)
 - [ ] Conectar aos RPC functions
 - [ ] Dashboard com analytics views
 - [ ] Lista de despesas com filtros
@@ -134,11 +146,13 @@ Análise semanal (Kimi) planejada para depois.
 - [ ] Validar RLS policies com app auth
 - [ ] Monitorar performance de queries
 
-### 5. Análise Semanal (Depois)
-- [ ] Integrar Kimi K2 para análise comportamental
-- [ ] Tags de contexto (Lazer vs Trabalho no mesmo mercado)
-- [ ] Alertas de orçamento
-- [ ] Recomendações de cortes
+### 5. Análise Semanal
+- [x] Worker de análise agendado, com relatórios estruturados em `reports`
+- [x] Decisão de notificação pelo próprio modelo (`silent`/`report_ready`/`observation`)
+- [x] Follow-ups automáticos via `scheduled_analyses`
+- [ ] Tags de contexto (Lazer vs Trabalho no mesmo mercado) — depende de `behavior_tags`
+- [ ] Alertas de orçamento — depende da tabela `settings`
+- [ ] Rodar por algumas semanas e avaliar a qualidade dos relatórios
 
 ## Riscos & Mitigações
 
@@ -156,4 +170,4 @@ Análise semanal (Kimi) planejada para depois.
 - ✅ Gemini API (free tier, chave configurada)
 - ✅ Telegram Bot (webhook ativo)
 - 📋 App frontend (Vite.js, Vercel — ainda a fazer)
-- 📋 Kimi K2 (análise semanal — planejado, não urgente)
+- 📋 Kimi K2 (análise semanal — opcional; o default usa a chave Gemini que já existe)

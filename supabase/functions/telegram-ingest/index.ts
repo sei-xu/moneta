@@ -28,6 +28,8 @@ const TG_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 const BUCKET = "receipts";
 // used by the /processar command to trigger the worker on demand
 const WORKER_URL = `${Deno.env.get("SUPABASE_URL")}/functions/v1/process-receipts`;
+// used by the /analisar command to run the analysis worker on demand
+const ANALYSIS_URL = `${Deno.env.get("SUPABASE_URL")}/functions/v1/analyze-expenses`;
 const WORKER_SECRET = Deno.env.get("WORKER_SECRET") ?? "";
 const MAX_DIMENSION = 2000;
 const JPEG_QUALITY = 80;
@@ -162,6 +164,88 @@ async function triggerWorker(chatId: number) {
   await tg("sendMessage", { chat_id: chatId, text: text });
 }
 
+// Telegram rejects messages over 4096 characters, and a full report in
+// markdown can exceed that — so it goes out in chunks split on blank lines.
+function splitForTelegram(text: string, limit = 3500): string[] {
+  const chunks: string[] = [];
+  let current = "";
+  for (const paragraph of text.split("\n\n")) {
+    if (current !== "" && current.length + paragraph.length + 2 > limit) {
+      chunks.push(current);
+      current = "";
+    }
+    current = current === "" ? paragraph : `${current}\n\n${paragraph}`;
+  }
+  if (current !== "") chunks.push(current);
+  return chunks;
+}
+
+async function sendLatestReport(chatId: number) {
+  const { data: report, error } = await supabase
+    .from("reports")
+    .select("period_start, period_end, headline, full_content, created_at")
+    .order("period_start", { ascending: false })
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    await tg("sendMessage", {
+      chat_id: chatId,
+      text: `⚠️ Não consegui buscar o relatório: ${error.message}`,
+    });
+    return;
+  }
+  if (!report) {
+    await tg("sendMessage", {
+      chat_id: chatId,
+      text: "📭 Nenhum relatório ainda. Envie /analisar para gerar um agora.",
+    });
+    return;
+  }
+
+  await tg("sendMessage", {
+    chat_id: chatId,
+    text: `📊 ${report.period_start} a ${report.period_end}\n\n${report.headline ?? ""}`,
+  });
+  for (const chunk of splitForTelegram(report.full_content ?? "")) {
+    await tg("sendMessage", { chat_id: chatId, text: chunk });
+  }
+}
+
+async function triggerAnalysis(chatId: number) {
+  if (!WORKER_SECRET) {
+    await tg("sendMessage", {
+      chat_id: chatId,
+      text: "⚠️ Análise não configurada (secret WORKER_SECRET ausente).",
+    });
+    return;
+  }
+  await tg("sendMessage", { chat_id: chatId, text: "🧮 Analisando o período..." });
+
+  const res = await fetch(ANALYSIS_URL, {
+    method: "POST",
+    headers: { "x-worker-secret": WORKER_SECRET, "Content-Type": "application/json" },
+    body: JSON.stringify({ mode: "weekly" }),
+  });
+  const body = await res.json().catch(() => ({}));
+
+  if (!res.ok || body.error) {
+    await tg("sendMessage", {
+      chat_id: chatId,
+      text: `⚠️ Falha na análise: ${body.error ?? `HTTP ${res.status}`}`,
+    });
+    return;
+  }
+
+  // On 'silent' the worker deliberately sends nothing, so the on-demand path
+  // has to say something — otherwise /analisar looks broken.
+  const text = body.notified
+    ? "✅ Análise concluída."
+    : "✅ Análise concluída — nada relevante para destacar no período. Envie /relatorio para ler mesmo assim.";
+  await tg("sendMessage", { chat_id: chatId, text });
+}
+
 // Lowercases, strips accents, drops a trailing "@BotUsername" from slash
 // commands (present in group chats), and trims punctuation — so "/Processar",
 // "/processar@MyBot" and "Alguma pendência?" all normalize the same way.
@@ -178,6 +262,8 @@ function normalizeCommand(text: string): string {
 const STATUS_COMMANDS = new Set(["/pendencias", "/status", "alguma pendencia", "pendencias"]);
 const PROCESS_COMMANDS = new Set(["/processar", "processar agora"]);
 const REVIEW_COMMANDS = new Set(["/revisar", "revisar"]);
+const REPORT_COMMANDS = new Set(["/relatorio", "relatorio", "ultimo relatorio"]);
+const ANALYZE_COMMANDS = new Set(["/analisar", "analisar agora"]);
 
 interface PendingExpense {
   id: string;
@@ -335,6 +421,14 @@ async function handleCommand(msg: TelegramMessage): Promise<boolean> {
   }
   if (REVIEW_COMMANDS.has(text)) {
     await startReview(msg.chat.id);
+    return true;
+  }
+  if (REPORT_COMMANDS.has(text)) {
+    await sendLatestReport(msg.chat.id);
+    return true;
+  }
+  if (ANALYZE_COMMANDS.has(text)) {
+    await triggerAnalysis(msg.chat.id);
     return true;
   }
   return false;

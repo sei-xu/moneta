@@ -1,7 +1,7 @@
 # Fluxo de Sessão do App (Planejado)
 
-> **Status: planejado, mistura fluxo já implementado (Telegram) com features futuras** (app UI,
-> orçamento por categoria, análise semanal via Kimi). Serve como visão de ponta a ponta de como
+> **Status: planejado, mistura fluxo já implementado (Telegram, análise semanal) com features
+> futuras** (app UI, orçamento por categoria). Serve como visão de ponta a ponta de como
 > uma sessão do usuário deve se comportar quando essas peças existirem — ver
 > [`docs/planejamento.md`](planejamento.md) para o que já está pronto hoje.
 
@@ -88,5 +88,6 @@ Notas:
   [`docs/api-endpoints-futuro.md`](api-endpoints-futuro.md).
 - O ramo de orçamento por categoria (`R`/`S`) depende da tabela `settings`, ainda não migrada —
   ver [`docs/database-schema.md`](database-schema.md#schema-futuro-planejado).
-- O ramo de análise semanal (`CRW` em diante) espelha
-  [`docs/automacoes-futuras.md`](automacoes-futuras.md).
+- O ramo de análise semanal (`CRW` em diante) já está implementado como a Edge Function
+  `analyze-expenses` — o nó `POST /analyse` corresponde hoje a uma chamada agendada por `pg_cron`,
+  não a uma rota HTTP. Ver [`docs/automacoes-futuras.md`](automacoes-futuras.md).

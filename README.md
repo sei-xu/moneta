@@ -4,7 +4,7 @@ Monēta é um assistente financeiro pessoal conversacional. Você envia recibos 
 
 > Epíteto de Juno, Monēta é a deusa romana que guardava o templo onde o dinheiro de Roma era cunhado — seu nome é a raiz etimológica de moeda, _money_ e _mint_. Era ela quem advertia, quem lembrava, quem mantinha as contas do império em ordem.
 
-**Status (2026-09-11)**: backend completo — schema com categorias, auditoria e analytics; bot do Telegram funcional (122+ recibos na fila, 109+ despesas processadas); fluxo `/revisar` com sugestão automática de categoria. Próximo: app UI e análise semanal autônoma.
+**Status (2026-09-11)**: backend completo — schema com categorias, auditoria e analytics; bot do Telegram funcional (122+ recibos na fila, 109+ despesas processadas); fluxo `/revisar` com sugestão automática de categoria; análise semanal autônoma gerando relatórios. Próximo: app UI.
 
 ## Princípios
 
@@ -50,6 +50,11 @@ flowchart LR
     EF2 -- parse --> Gemini[Gemini API]
     EF2 -- RPC resolve --> DB[(expenses + expense_items)]
     EF2 -- pergunta/lembrete --> TG
+    Cron --> EF3["Edge Function\nanalyze-expenses"]
+    EF3 -- contexto agregado --> DB
+    EF3 -- análise --> LLM[Gemini / Kimi]
+    EF3 -- relatório --> RP[(reports)]
+    EF3 -- notifica se relevante --> TG
 ```
 
 Essa arquitetura substituiu o plano original (FastAPI no Render + frontend Vite no Vercel) — Edge Functions cobrem o webhook do Telegram, o agendamento (pg_cron) e as operações atômicas (RPC) sem infraestrutura extra. Detalhes em [`docs/planejamento.md`](docs/planejamento.md).
@@ -79,10 +84,11 @@ Essa arquitetura substituiu o plano original (FastAPI no Render + frontend Vite 
 - [`docs/database-schema.md`](docs/database-schema.md) — referência completa do schema
 - [`docs/pipeline-ia-recibos.md`](docs/pipeline-ia-recibos.md) — arquitetura da pipeline de IA
 - [`docs/fluxos-interacao.md`](docs/fluxos-interacao.md) — diagramas de sequência do fluxo atual
-- [`docs/automacoes-futuras.md`](docs/automacoes-futuras.md) — análise semanal e automações planejadas
+- [`docs/automacoes-futuras.md`](docs/automacoes-futuras.md) — análise semanal e automações agendadas
 - [`docs/fluxo-sessao-app-futuro.md`](docs/fluxo-sessao-app-futuro.md) — fluxo de sessão de ponta a ponta (implementado + planejado)
 - [`docs/api-endpoints-futuro.md`](docs/api-endpoints-futuro.md) — endpoints do backend original, ainda não implementados
 - [`docs/planejamento.md`](docs/planejamento.md) — status e prioridades
 - [`supabase/README.md`](supabase/README.md) — setup das migrations
 - [`supabase/functions/telegram-ingest/README.md`](supabase/functions/telegram-ingest/README.md) — setup do bot do Telegram
 - [`supabase/functions/process-receipts/README.md`](supabase/functions/process-receipts/README.md) — setup do worker de processamento
+- [`supabase/functions/analyze-expenses/README.md`](supabase/functions/analyze-expenses/README.md) — setup do worker de análise e relatórios
