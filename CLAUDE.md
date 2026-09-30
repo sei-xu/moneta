@@ -4,13 +4,16 @@ Personal finance management app. **Current phase: backend complete** — Full Su
 
 ## Build, lint and test commands
 
-There is no `package.json`, no build step, no linter and no test suite in this repo — don't invent `npm run` commands, none exist:
+The backend half of this repo has no `package.json`, no build step and no linter — don't invent `npm run` commands for it. The only npm surface is `app/`:
+
+- **App UI** (`app/`, Vite + React + TypeScript): run these **from `app/`**, nowhere else — `npm install`, `npm run dev`, `npm run build` (runs `tsc --noEmit` first), `npm test` (Vitest). `app/` is the only directory with a `package.json`.
+
 
 - **Edge Functions** (`supabase/functions/*/index.ts`, Deno): deployed straight to Supabase with `supabase functions deploy <name>` (Supabase CLI, project must be linked via `supabase link`). No local build or bundling step. Type check one with `deno check supabase/functions/<name>/index.ts`.
-- **Tests**: the only automated tests are Deno unit tests over the analysis worker's pure logic — `deno test supabase/functions/analyze-expenses/`. Everything else is verified manually, by invoking the deployed function or reading logs (`supabase functions logs <name>`).
+- **Tests**: Deno unit tests over the analysis worker's pure logic (`deno test supabase/functions/analyze-expenses/`) and Vitest in `app/`. Edge Function behaviour beyond the pure logic is verified manually, by invoking the deployed function or reading logs (`supabase functions logs <name>`).
 - **SQL checks** (`supabase/tests/*.sql`): plain SQL scripts that seed, assert and roll back. Run one with `supabase db query --linked -f supabase/tests/<file>.sql`, or paste it whole into the Supabase SQL Editor. A clean run means every assertion passed; a failure aborts and prints its message.
 - **Migrations** (`supabase/migrations/*.sql`): applied either by running the file's SQL directly in the Supabase dashboard's SQL Editor, in numeric filename order (see `supabase/README.md`), or via `supabase db push --linked` with the CLI. No `Down` migration convention here — this is a separate repo from Ḫprj's own `migrations/` and doesn't follow node-pg-migrate's Up/Down format.
-- No TypeScript project config (`tsconfig.json`) exists, so there is no repo-wide typecheck command either — Deno's own type checking happens implicitly when a function is deployed or run.
+- There is no repo-wide typecheck. `app/tsconfig.json` covers `app/src` only; the Edge Functions are checked with `deno check`.
 
 ## Conventions
 
@@ -112,7 +115,6 @@ There is no `package.json`, no build step, no linter and no test suite in this r
 - [ ] Update `process-receipts` to call `suggest_category_for_merchant()` and pass predictions to Gemini
 - [ ] Update `telegram-ingest` with `/classify` and `/review` commands for manual category selection
 - [ ] Wire up `log_audit()` calls from Edge Functions (currently manual, should be automatic)
-- [ ] Add RLS policies for future app auth (read own expenses, write via approved functions only)
-- [ ] Build app UI to consume the RPC functions and analytics views
-- [ ] Add RLS policies for `authenticated` before the app UI: the views now respect the caller's RLS, so with no policies an app session reads nothing (which is correct, but means the UI needs policies to work)
+- [x] RLS policies for app auth — read-only for `authenticated`, gated on an `app_users` allowlist row (migration `20260930000006`). Signing up is not being allowed in: without the row, a session reads nothing
+- [x] App UI in `app/` — read-only screens over the views and tables
 - [ ] Promote `taxonomy_notes` from reports into candidate `behavior_tags` / `categories` rows
