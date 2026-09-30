@@ -45,7 +45,6 @@ supabase secrets set ANALYSIS_PROVIDER=kimi KIMI_API_KEY=<chave do Moonshot>
 | `ANALYSIS_MODEL` | `gemini-3.6-flash` / `kimi-k2.6` | Sobrescreve o modelo do provedor |
 | `ANALYSIS_MAX_FOLLOWUPS` | `3` | Teto de follow-ups por relatório e por rodada de poll |
 | `ANALYSIS_MAX_RETRIES` | `3` | Tentativas quando o provedor devolve 429/5xx (backoff 2s, 6s) |
-| `WORKER_SECRET` | — | Mesmo secret do `process-receipts` |
 | `GEMINI_API_KEY` / `KIMI_API_KEY` | — | Conforme o provedor |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_CHAT_IDS` | — | Já definidos pelo `telegram-ingest` |
 
@@ -59,28 +58,31 @@ No SQL Editor, em ordem:
 - `20260930000002_create_analysis_context_function.sql` — a RPC de pré-agregação
 - `20260930000003_schedule_analysis_jobs.sql` — os jobs de cron (**substitua `<project-ref>`**; o segredo vem do Vault, ver abaixo)
 
-### 1b. O segredo do cron (Vault)
+### 1b. O segredo compartilhado (Vault, fonte única)
 
-O `pg_cron` roda dentro do Postgres, que **não** enxerga um `.env` nem os secrets das Edge Functions. Para não hardcodar o valor no SQL do job (onde ele ficaria visível em `cron.job.command` e no dashboard), guarde-o uma vez no Vault:
+O segredo que autentica as chamadas entre `pg_cron` e as Edge Functions vive **só no Vault**. Não existe secret `WORKER_SECRET` nas Edge Functions: elas leem o mesmo valor pela RPC `public.worker_secret()` (migração `20260930000004`), que só o `service_role` pode executar.
+
+É de propósito. Enquanto havia duas cópias — uma no ambiente das functions, outra hardcodada no SQL do job — elas divergiram e o cron do `process-receipts` respondeu 401 em todo tick, sem ninguém notar. Com uma cópia só, não há o que dessincronizar.
 
 ```sql
+-- definir
 select vault.create_secret(
-  '<mesmo valor do WORKER_SECRET>',
+  '<valor>',
   'worker_secret',
   'Shared secret for pg_cron -> Edge Function calls'
 );
-```
 
-Os jobs decifram na hora de rodar. Para trocar depois:
-
-```sql
+-- rotacionar: um único update, nada mais a ajustar
 select vault.update_secret(
   (select id from vault.secrets where name = 'worker_secret'),
   '<novo valor>'
 );
+
+-- ler de volta, se precisar
+select decrypted_secret from vault.decrypted_secrets where name = 'worker_secret';
 ```
 
-Lembre de manter esse valor igual ao secret `WORKER_SECRET` das Edge Functions — é a divergência entre os dois que derrubou o job do `process-receipts` (ver o fim deste arquivo).
+As functions cacheiam o valor por isolate, então uma rotação só alcança um isolate quente quando ele recicla — redeploy se precisar de efeito imediato.
 
 ### 2. Deploy
 
@@ -110,11 +112,22 @@ Para validar num banco onde estas migrações ainda não foram aplicadas, concat
 
 Fim a fim:
 
-```sh
-curl -X POST "https://<project-ref>.supabase.co/functions/v1/analyze-expenses" \
-  -H "x-worker-secret: $WORKER_SECRET" \
-  -H "Content-Type: application/json" \
-  -d '{"mode":"weekly"}'
+Como o segredo só existe no Vault, o disparo manual sai de dentro do banco — assim ele nunca passa pelo seu shell nem pelo histórico:
+
+```sql
+select net.http_post(
+  url := 'https://<project-ref>.supabase.co/functions/v1/analyze-expenses',
+  headers := jsonb_build_object(
+    'x-worker-secret',
+    (select decrypted_secret from vault.decrypted_secrets where name = 'worker_secret'),
+    'Content-Type', 'application/json'
+  ),
+  body := '{"mode":"weekly"}'::jsonb,
+  timeout_milliseconds := 170000
+) as request_id;
+
+-- a resposta chega de forma assíncrona:
+select status_code, content from net._http_response where id = <request_id>;
 ```
 
 Esperado: uma linha nova em `reports` e — conforme `notification_decision` — nenhuma mensagem, o headline com convite para `/relatorio`, ou a observação direta. Pelo bot, `/analisar` dispara o mesmo e `/relatorio` lê o último relatório.
@@ -125,7 +138,7 @@ Logs: `supabase functions logs analyze-expenses`.
 
 Descobertos ao agendar a análise, inspecionando `net._http_response`: **todas** as respostas retidas eram 401.
 
-1. **`process-receipts`** — o job tinha um `WORKER_SECRET` hardcodado que **não** corresponde ao secret implantado nas Edge Functions. Todo tick do cron levava 401, ou seja, o processamento agendado da fila nunca funcionou; ela só avançava quando você mandava `/processar` no bot (aí é function→function, os dois lados leem o mesmo env e sempre batem).
+1. **`process-receipts`** — o job tinha um segredo hardcodado que **não** correspondia ao implantado nas Edge Functions. Todo tick do cron levava 401, ou seja, o processamento agendado da fila nunca funcionou; ela só avançava quando você mandava `/processar` no bot (aí era function→function, os dois lados liam o mesmo env e sempre batiam). É a razão de o segredo ter virado fonte única no Vault.
 2. **`notify-pending-review-daily`** — a migração `20260724000011` usava `current_setting('app.supabase_url')` e `current_setting('app.service_role_key')`, GUCs que nenhuma migração define. Na prática o job nem chegou a existir: só `process-receipts` aparecia em `cron.job`.
 
 A `20260930000003` recria os quatro jobs lendo o segredo do Vault, o que elimina a classe inteira do problema — não há mais duas cópias do valor para divergirem.

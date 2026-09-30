@@ -10,8 +10,8 @@
 // Deploy: supabase functions deploy notify-pending-review --no-verify-jwt
 
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { authorizeWorker } from "../_shared/worker_secret.ts";
 
-const WORKER_SECRET = Deno.env.get("WORKER_SECRET")!;
 const BOT_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN")!;
 const TELEGRAM_CHAT_ID = Deno.env.get("TELEGRAM_ALLOWED_CHAT_IDS")!.split(",")[0].trim();
 
@@ -63,9 +63,8 @@ async function notifyPendingReview() {
 }
 
 Deno.serve(async (req) => {
-  if (req.headers.get("x-worker-secret") !== WORKER_SECRET) {
-    return new Response("unauthorized", { status: 401 });
-  }
+  const denied = await authorizeWorker(req, supabase);
+  if (denied) return denied;
 
   try {
     const result = await notifyPendingReview();

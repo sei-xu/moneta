@@ -16,6 +16,7 @@
 // Scheduling: pg_cron + pg_net (see README.md).
 
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { authorizeWorker } from "../_shared/worker_secret.ts";
 import {
   ANALYSIS_SCHEMA,
   type AnalysisResult,
@@ -28,7 +29,6 @@ import {
   previousIsoWeek,
 } from "./analysis.ts";
 
-const WORKER_SECRET = Deno.env.get("WORKER_SECRET")!;
 const BOT_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN")!;
 const CHAT_ID = Deno.env.get("TELEGRAM_ALLOWED_CHAT_IDS")!.split(",")[0].trim();
 const MAX_FOLLOWUPS = Number(Deno.env.get("ANALYSIS_MAX_FOLLOWUPS") ?? "3");
@@ -197,6 +197,20 @@ async function scheduleFollowUps(
   sourceReportId: string,
   now: Date,
 ): Promise<number> {
+  // Re-running a weekly period updates its report rather than creating a new
+  // one, so the follow-ups it had asked for must be replaced too — otherwise
+  // every re-run stacks another copy of the same questions on the queue.
+  // Only still-pending rows are cleared: one that already ran produced a
+  // report of its own and is history.
+  const { error: clearError } = await supabase
+    .from("scheduled_analyses")
+    .delete()
+    .eq("source_report_id", sourceReportId)
+    .eq("status", "pending");
+  if (clearError) {
+    throw new Error(`clearing stale follow-ups failed: ${clearError.message}`);
+  }
+
   const followUps = followUpsFrom(result, now).slice(0, MAX_FOLLOWUPS);
   if (followUps.length === 0) return 0;
 
@@ -277,9 +291,8 @@ async function runDueFollowUps(provider: Provider, now: Date) {
 }
 
 Deno.serve(async (req) => {
-  if (req.headers.get("x-worker-secret") !== WORKER_SECRET) {
-    return new Response("unauthorized", { status: 401 });
-  }
+  const denied = await authorizeWorker(req, supabase);
+  if (denied) return denied;
 
   const body = await req.json().catch(() => ({})) as {
     mode?: string;

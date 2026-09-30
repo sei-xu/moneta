@@ -19,7 +19,7 @@ Edge Function que recebe o webhook do Telegram e faz a ingestão: valida o remet
 
 Mensagens de qualquer chat fora da allowlist são ignoradas silenciosamente.
 
-> Comandos são interceptados **antes** da ingestão — qualquer outro texto livre vira uma despesa na fila. O `/processar` exige o secret `WORKER_SECRET` também configurado nesta função (mesmo valor usado pelo `process-receipts`).
+> Comandos são interceptados **antes** da ingestão — qualquer outro texto livre vira uma despesa na fila. `/processar` e `/analisar` chamam as outras functions autenticando com o segredo do Vault (`worker_secret`), lido pela RPC `public.worker_secret()` — não há secret `WORKER_SECRET` no ambiente.
 >
 > Opcional: registrar os comandos para aparecerem no menu do Telegram:
 >

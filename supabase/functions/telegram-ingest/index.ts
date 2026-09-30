@@ -9,6 +9,7 @@
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { Image } from "https://deno.land/x/imagescript@1.3.0/mod.ts";
+import { workerSecret } from "../_shared/worker_secret.ts";
 
 const BOT_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN")!;
 const WEBHOOK_SECRET = Deno.env.get("TELEGRAM_WEBHOOK_SECRET")!;
@@ -30,7 +31,6 @@ const BUCKET = "receipts";
 const WORKER_URL = `${Deno.env.get("SUPABASE_URL")}/functions/v1/process-receipts`;
 // used by the /analisar command to run the analysis worker on demand
 const ANALYSIS_URL = `${Deno.env.get("SUPABASE_URL")}/functions/v1/analyze-expenses`;
-const WORKER_SECRET = Deno.env.get("WORKER_SECRET") ?? "";
 const MAX_DIMENSION = 2000;
 const JPEG_QUALITY = 80;
 
@@ -131,10 +131,14 @@ async function sendQueueStatus(chatId: number) {
 }
 
 async function triggerWorker(chatId: number) {
-  if (!WORKER_SECRET) {
+  let secret: string;
+  try {
+    secret = await workerSecret(supabase);
+  } catch (err) {
+    console.error(err);
     await tg("sendMessage", {
       chat_id: chatId,
-      text: "⚠️ Worker não configurado (secret WORKER_SECRET ausente).",
+      text: "⚠️ Worker não configurado (segredo 'worker_secret' ausente no Vault).",
     });
     return;
   }
@@ -142,7 +146,7 @@ async function triggerWorker(chatId: number) {
 
   const res = await fetch(WORKER_URL, {
     method: "POST",
-    headers: { "x-worker-secret": WORKER_SECRET },
+    headers: { "x-worker-secret": secret },
   });
   const body = await res.json().catch(() => ({}));
 
@@ -214,10 +218,14 @@ async function sendLatestReport(chatId: number) {
 }
 
 async function triggerAnalysis(chatId: number) {
-  if (!WORKER_SECRET) {
+  let secret: string;
+  try {
+    secret = await workerSecret(supabase);
+  } catch (err) {
+    console.error(err);
     await tg("sendMessage", {
       chat_id: chatId,
-      text: "⚠️ Análise não configurada (secret WORKER_SECRET ausente).",
+      text: "⚠️ Análise não configurada (segredo 'worker_secret' ausente no Vault).",
     });
     return;
   }
@@ -225,7 +233,7 @@ async function triggerAnalysis(chatId: number) {
 
   const res = await fetch(ANALYSIS_URL, {
     method: "POST",
-    headers: { "x-worker-secret": WORKER_SECRET, "Content-Type": "application/json" },
+    headers: { "x-worker-secret": secret, "Content-Type": "application/json" },
     body: JSON.stringify({ mode: "weekly" }),
   });
   const body = await res.json().catch(() => ({}));

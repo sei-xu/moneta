@@ -100,6 +100,13 @@ There is no `package.json`, no build step, no linter and no test suite in this r
 - `notification_decision` (`silent`/`report_ready`/`observation`) is returned by the model and decides whether a Telegram message goes out at all
 - `forward_looking` items with `revisit_in_days` become `scheduled_analyses` rows, run by an hourly poll
 
+### The worker secret
+- `pg_cron` and the Edge Functions authenticate to each other with one shared secret, and it lives in **exactly one place**: the Supabase Vault row named `worker_secret`. There is no `WORKER_SECRET` Edge Function secret — the functions read the same row through `public.worker_secret()`, a security-definer RPC granted to `service_role` only
+- Never re-introduce a second copy. Two copies is what left the `process-receipts` cron returning 401 on every tick for weeks, because nothing compares them and a 401 looks like a rejected caller rather than a broken config
+- For the same reason, a missing secret is answered with **503**, not 401: a configuration fault must not be indistinguishable from a wrong caller
+- Rotation is a single `vault.update_secret`. Functions cache the value per isolate, so redeploy if a rotation must take effect immediately
+- `net.http_post` defaults to a 5 s timeout; the scheduled jobs pass `timeout_milliseconds` explicitly, otherwise LLM-length calls land in `net._http_response` as `status_code = null` and the history cannot distinguish success from failure
+
 ### Next Steps (Phase 4)
 - [ ] Update `process-receipts` to call `suggest_category_for_merchant()` and pass predictions to Gemini
 - [ ] Update `telegram-ingest` with `/classify` and `/review` commands for manual category selection

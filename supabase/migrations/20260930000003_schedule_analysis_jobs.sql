@@ -58,6 +58,11 @@ begin
     perform cron.schedule(
       v_job.jobname,
       v_job.schedule,
+      -- pg_net defaults to a 5 s timeout. These workers call an LLM and run
+      -- far longer than that; the function itself still completes, but the
+      -- response lands as status_code = null, which makes the job history
+      -- useless for telling a success from a failure. An explicit timeout
+      -- above the Edge Function wall clock keeps net._http_response readable.
       format(
         $cmd$
         select net.http_post(
@@ -67,7 +72,8 @@ begin
             (select decrypted_secret from vault.decrypted_secrets where name = 'worker_secret'),
             'Content-Type', 'application/json'
           ),
-          body := %L::jsonb
+          body := %L::jsonb,
+          timeout_milliseconds := 170000
         );
         $cmd$,
         v_base || v_job.fn,

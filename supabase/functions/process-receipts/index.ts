@@ -16,8 +16,8 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { GoogleGenAI, Type } from "npm:@google/genai";
 import { encodeBase64 } from "https://deno.land/std@0.224.0/encoding/base64.ts";
+import { authorizeWorker } from "../_shared/worker_secret.ts";
 
-const WORKER_SECRET = Deno.env.get("WORKER_SECRET")!;
 const BOT_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN")!;
 const GEMINI_MODEL = Deno.env.get("GEMINI_MODEL") ?? "gemini-3.6-flash";
 const BATCH_SIZE = Number(Deno.env.get("WORKER_BATCH_SIZE") ?? "2");
@@ -347,9 +347,8 @@ async function markFailure(row: PendingRow, err: unknown): Promise<"retrying" | 
 }
 
 Deno.serve(async (req) => {
-  if (req.headers.get("x-worker-secret") !== WORKER_SECRET) {
-    return new Response("unauthorized", { status: 401 });
-  }
+  const denied = await authorizeWorker(req, supabase);
+  if (denied) return denied;
 
   const processedToday = await countProcessedToday();
   const remainingBudget = DAILY_BUDGET - processedToday;
