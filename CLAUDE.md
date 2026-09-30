@@ -8,7 +8,7 @@ There is no `package.json`, no build step, no linter and no test suite in this r
 
 - **Edge Functions** (`supabase/functions/*/index.ts`, Deno): deployed straight to Supabase with `supabase functions deploy <name>` (Supabase CLI, project must be linked via `supabase link`). No local build or bundling step. Type check one with `deno check supabase/functions/<name>/index.ts`.
 - **Tests**: the only automated tests are Deno unit tests over the analysis worker's pure logic — `deno test supabase/functions/analyze-expenses/`. Everything else is verified manually, by invoking the deployed function or reading logs (`supabase functions logs <name>`).
-- **SQL checks** (`supabase/tests/*.sql`): plain SQL scripts that seed, assert and roll back. Not wired to any runner — paste the file into the Supabase SQL Editor and run it whole.
+- **SQL checks** (`supabase/tests/*.sql`): plain SQL scripts that seed, assert and roll back. Run one with `supabase db query --linked -f supabase/tests/<file>.sql`, or paste it whole into the Supabase SQL Editor. A clean run means every assertion passed; a failure aborts and prints its message.
 - **Migrations** (`supabase/migrations/*.sql`): applied either by running the file's SQL directly in the Supabase dashboard's SQL Editor, in numeric filename order (see `supabase/README.md`), or via `supabase db push --linked` with the CLI. No `Down` migration convention here — this is a separate repo from Ḫprj's own `migrations/` and doesn't follow node-pg-migrate's Up/Down format.
 - No TypeScript project config (`tsconfig.json`) exists, so there is no repo-wide typecheck command either — Deno's own type checking happens implicitly when a function is deployed or run.
 

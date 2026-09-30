@@ -22,7 +22,8 @@ declare
   v_result jsonb;
 begin
   if p_period_end < p_period_start then
-    raise exception 'p_period_end (%) is before p_period_start (%)', p_period_end, p_period_start;
+    raise exception 'p_period_end (%) is before p_period_start (%)', p_period_end, p_period_start
+      using errcode = 'invalid_parameter_value';
   end if;
 
   with period_expenses as (
@@ -86,17 +87,20 @@ begin
     ) top_merchants
   ),
   payment_rows as (
-    select jsonb_agg(
-      jsonb_build_object(
+    -- the grouping happens in the subquery: jsonb_agg may not wrap sum()
+    -- directly, since an aggregate cannot be nested inside another
+    select jsonb_agg(pay) as rows
+    from (
+      select jsonb_build_object(
         'payment_method', coalesce(pm.name, 'Não informado'),
         'total', round(sum(p.amount), 2),
         'expense_count', count(*)
-      )
+      ) as pay
+      from period_expenses p
+      left join public.payment_methods pm on p.payment_method_id = pm.id
+      group by pm.name
       order by sum(p.amount) desc
-    ) as rows
-    from period_expenses p
-    left join public.payment_methods pm on p.payment_method_id = pm.id
-    group by pm.name
+    ) by_payment
   ),
   queue as (
     select

@@ -70,9 +70,13 @@ deno test supabase/functions/analyze-expenses/
 
 Verificação do SQL (semeia, afirma e faz rollback — não deixa nada no banco):
 
+```sh
+supabase db query --linked -f supabase/tests/analysis_checks.sql
 ```
-supabase/tests/analysis_checks.sql   # colar e rodar inteiro no SQL Editor
-```
+
+Ou cole o arquivo inteiro no SQL Editor. Uma execução limpa significa que todas as asserções passaram; uma falha aborta e imprime a mensagem.
+
+Para validar num banco onde estas migrações ainda não foram aplicadas, concatene `20260930000001` e `20260930000002` antes do arquivo de checks dentro de **um único** `begin; ... rollback;` — o DDL também é revertido e o banco fica intacto. Foi assim que este script foi validado contra o schema real antes do primeiro deploy.
 
 Fim a fim:
 

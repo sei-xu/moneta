@@ -1,8 +1,16 @@
 -- Verification script for the analysis phase.
 --
--- Run the whole file in the Supabase SQL Editor. It seeds synthetic data,
--- asserts, and rolls back — nothing is left behind. Any failed assertion
--- aborts with the message shown below.
+-- Run the whole file in the Supabase SQL Editor, or from the CLI:
+--
+--   supabase db query --linked -f supabase/tests/analysis_checks.sql
+--
+-- It seeds synthetic data, asserts, and rolls back — nothing is left behind.
+-- A failed assertion aborts the run and prints its message, so a clean run
+-- means every assertion passed.
+--
+-- To validate against a database where the analysis migrations are not applied
+-- yet, concatenate them ahead of this file inside a single begin/rollback:
+-- the DDL is then rolled back too and the target database is left untouched.
 --
 -- The seeded period sits in 2027 on purpose: no real expense exists there,
 -- so the aggregate totals are exactly what this script inserted.
@@ -74,7 +82,9 @@ begin
     perform public.get_analysis_context('2027-03-07', '2027-03-01');
     raise exception 'inverted period was accepted';
   exception
-    when sqlstate '22000' then null;  -- raised by the function, as expected
+    -- the function's own errcode; the sentinel raise above stays P0001, so a
+    -- silently accepted inverted period is not mistaken for a pass
+    when invalid_parameter_value then null;
   end;
 
   -- reports: the enum constrains notification_decision
