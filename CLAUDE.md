@@ -118,3 +118,7 @@ The backend half of this repo has no `package.json`, no build step and no linter
 - [x] RLS policies for app auth — read-only for `authenticated`, gated on an `app_users` allowlist row (migration `20260930000006`). Signing up is not being allowed in: without the row, a session reads nothing
 - [x] App UI in `app/` — read-only screens over the views and tables
 - [ ] Promote `taxonomy_notes` from reports into candidate `behavior_tags` / `categories` rows
+
+## Versão
+
+O `package.json` da raiz existe **só** para guardar `version` — o Ḫprj lê a versão dali e bumpa a cada item mergeado (mudança só de docs = patch). Não tem scripts nem dependências: não rode `npm install` na raiz. O build, o lint e os testes que existem vivem em `app/` (ver a seção de comandos acima); o resto do repositório continua sem build.
