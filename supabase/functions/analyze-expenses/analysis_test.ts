@@ -9,6 +9,7 @@ import {
   type AnalysisResult,
   buildPrompt,
   followUpsFrom,
+  isRetryableStatus,
   notificationMessage,
   parseAnalysis,
   previousIsoWeek,
@@ -127,6 +128,19 @@ Deno.test("followUpsFrom schedules only items that asked for a revisit", () => {
   assertEquals(followUps.length, 1);
   assertEquals(followUps[0].run_at, "2026-10-14T00:00:00.000Z");
   assertStringIncludes(followUps[0].prompt, "Delivery");
+});
+
+Deno.test("isRetryableStatus retries upstream blips but not caller errors", () => {
+  // 503 is what Gemini actually returned under load during the first
+  // production run, and 429 is the free-tier rate limit
+  for (const status of [429, 500, 502, 503, 504]) {
+    assertEquals(isRetryableStatus(status), true, `${status} should retry`);
+  }
+  // a bad key, an unknown model or a malformed request fail identically on
+  // a second attempt, so retrying only burns the run
+  for (const status of [400, 401, 403, 404, 422]) {
+    assertEquals(isRetryableStatus(status), false, `${status} should not retry`);
+  }
 });
 
 Deno.test("notificationMessage stays quiet on a silent decision", () => {

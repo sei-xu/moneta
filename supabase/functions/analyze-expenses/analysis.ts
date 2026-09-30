@@ -52,6 +52,16 @@ export function previousIsoWeek(now: Date): Period {
   return { start: toIsoDate(start), end: toIsoDate(end) };
 }
 
+/**
+ * Upstream statuses worth another attempt: rate limits and the provider's own
+ * transient unavailability. Anything else (bad key, unknown model, malformed
+ * request) will fail again identically, so retrying only wastes the run.
+ */
+export function isRetryableStatus(status: number): boolean {
+  return status === 429 || status === 500 || status === 502 ||
+    status === 503 || status === 504;
+}
+
 /** JSON schema the model must answer with, mirroring the `reports` columns. */
 export const ANALYSIS_SCHEMA = {
   type: "object",

@@ -13,6 +13,12 @@ O modelo **nunca** consulta o banco: a RPC `get_analysis_context` pré-agrega o 
 
 Para reprocessar um período específico, passe as datas: `{"mode":"weekly","period_start":"2026-09-21","period_end":"2026-09-27"}`. O período semanal é único em `reports`, então **reprocessar sobrescreve** em vez de duplicar — um tick de cron repetido é inofensivo.
 
+## Falhas do provedor
+
+O relatório semanal tem uma única chance agendada, então um 503 passageiro não pode custar a semana inteira: em 429 ou 5xx o worker tenta de novo (`ANALYSIS_MAX_RETRIES`, backoff 2s e 6s). Erros de chamador — chave inválida, modelo inexistente, request malformado — falham igual na segunda tentativa, então não são retentados.
+
+Isso não é hipotético: a primeira execução em produção levou 503 (`This model is currently experiencing high demand`) duas vezes seguidas antes do retry existir.
+
 ## A decisão de notificar
 
 O próprio modelo devolve `notification_decision`, e é ela que governa o envio:
@@ -38,6 +44,7 @@ supabase secrets set ANALYSIS_PROVIDER=kimi KIMI_API_KEY=<chave do Moonshot>
 | `ANALYSIS_PROVIDER` | `gemini` | `gemini` ou `kimi` |
 | `ANALYSIS_MODEL` | `gemini-3.6-flash` / `kimi-k2.6` | Sobrescreve o modelo do provedor |
 | `ANALYSIS_MAX_FOLLOWUPS` | `3` | Teto de follow-ups por relatório e por rodada de poll |
+| `ANALYSIS_MAX_RETRIES` | `3` | Tentativas quando o provedor devolve 429/5xx (backoff 2s, 6s) |
 | `WORKER_SECRET` | — | Mesmo secret do `process-receipts` |
 | `GEMINI_API_KEY` / `KIMI_API_KEY` | — | Conforme o provedor |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_CHAT_IDS` | — | Já definidos pelo `telegram-ingest` |

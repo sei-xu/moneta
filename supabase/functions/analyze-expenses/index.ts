@@ -21,6 +21,7 @@ import {
   type AnalysisResult,
   buildPrompt,
   followUpsFrom,
+  isRetryableStatus,
   notificationMessage,
   parseAnalysis,
   type Period,
@@ -31,6 +32,7 @@ const WORKER_SECRET = Deno.env.get("WORKER_SECRET")!;
 const BOT_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN")!;
 const CHAT_ID = Deno.env.get("TELEGRAM_ALLOWED_CHAT_IDS")!.split(",")[0].trim();
 const MAX_FOLLOWUPS = Number(Deno.env.get("ANALYSIS_MAX_FOLLOWUPS") ?? "3");
+const MAX_RETRIES = Number(Deno.env.get("ANALYSIS_MAX_RETRIES") ?? "3");
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -79,35 +81,52 @@ async function tg(method: string, payload: Record<string, unknown>) {
   return await res.json();
 }
 
+// A weekly report only gets one scheduled shot, so a transient upstream blip
+// must not cost the whole week. Retries stay short: the function has a wall
+// clock, and a provider that is still down after a few seconds will be
+// retried by the next cron tick anyway.
 async function runModel(
   provider: Provider,
   prompt: string,
 ): Promise<AnalysisResult> {
-  const res = await fetch(`${provider.baseUrl}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${provider.apiKey}`,
-    },
-    body: JSON.stringify({
-      model: provider.model,
-      messages: [{ role: "user", content: prompt }],
-      response_format: {
-        type: "json_schema",
-        json_schema: { name: "analysis", schema: ANALYSIS_SCHEMA, strict: true },
-      },
-    }),
-  });
+  let lastError = "";
 
-  if (!res.ok) {
-    throw new Error(`analysis model HTTP ${res.status}: ${await res.text()}`);
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    if (attempt > 0) {
+      await new Promise((r) => setTimeout(r, 2000 * Math.pow(3, attempt - 1)));
+    }
+
+    const res = await fetch(`${provider.baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${provider.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: provider.model,
+        messages: [{ role: "user", content: prompt }],
+        response_format: {
+          type: "json_schema",
+          json_schema: { name: "analysis", schema: ANALYSIS_SCHEMA, strict: true },
+        },
+      }),
+    });
+
+    if (res.ok) {
+      const body = await res.json();
+      const content = body?.choices?.[0]?.message?.content;
+      if (typeof content !== "string") {
+        throw new Error(`analysis model returned no content: ${JSON.stringify(body)}`);
+      }
+      return parseAnalysis(content);
+    }
+
+    lastError = `HTTP ${res.status}: ${await res.text()}`;
+    if (!isRetryableStatus(res.status)) break;
+    console.warn(`analysis model attempt ${attempt + 1} failed: ${lastError}`);
   }
-  const body = await res.json();
-  const content = body?.choices?.[0]?.message?.content;
-  if (typeof content !== "string") {
-    throw new Error(`analysis model returned no content: ${JSON.stringify(body)}`);
-  }
-  return parseAnalysis(content);
+
+  throw new Error(`analysis model ${lastError}`);
 }
 
 async function fetchContext(period: Period): Promise<unknown> {
