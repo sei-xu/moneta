@@ -6,7 +6,7 @@ Personal finance management app. **Current phase: backend complete** — Full Su
 
 The backend half of this repo has no `package.json`, no build step and no linter — don't invent `npm run` commands for it. The only npm surface is `app/`:
 
-- **App UI** (`app/`, Vite + React + TypeScript): run these **from `app/`**, nowhere else — `npm install`, `npm run dev`, `npm run build` (runs `tsc --noEmit` first), `npm test` (Vitest). `app/` is the only directory with a `package.json`.
+- **App UI** (`app/`, Vite + React + TypeScript): run these **from `app/`**, nowhere else — `npm install`, `npm run dev`, `npm run build` (runs `tsc --noEmit` first), `npm test` (Vitest). `app/` holds the only dependencies and scripts in the repo; the root `package.json` exists solely so Ḫprj can read and bump a version, and has nothing to run.
 
 
 - **Edge Functions** (`supabase/functions/*/index.ts`, Deno): deployed straight to Supabase with `supabase functions deploy <name>` (Supabase CLI, project must be linked via `supabase link`). No local build or bundling step. Type check one with `deno check supabase/functions/<name>/index.ts`.
