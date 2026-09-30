@@ -1,0 +1,6 @@
+{
+  "name": "moneta",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Guarda a versão do app para o Ḫprj (docs/methodology.md, 'Versionamento'). O Monēta não é um projeto Node: sem scripts, sem dependências."
+}
