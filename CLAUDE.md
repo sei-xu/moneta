@@ -72,6 +72,7 @@ There is no `package.json`, no build step, no linter and no test suite in this r
 
 ### Security & Access Control
 - All tables have RLS enabled with no policies — access via `service_role` key only (Edge Functions)
+- The 7 analytics views are `security_invoker = on` (migration `20260930000005`), so they are checked as the caller instead of the owner. Without it a view over an RLS'd table hands the full history to anyone with the anon key. **`create or replace view` silently resets this** — declare it inline (`create or replace view x with (security_invoker = on) as ...`) on any future edit
 - The `receipts` bucket is private; file paths stored in DB, signed URLs generated on read
 - `expenses.category_id` now has a proper FK constraint to `categories.id` (ON DELETE SET NULL)
 - Audit log is append-only (no updates/deletes) for compliance & debugging
@@ -113,5 +114,5 @@ There is no `package.json`, no build step, no linter and no test suite in this r
 - [ ] Wire up `log_audit()` calls from Edge Functions (currently manual, should be automatic)
 - [ ] Add RLS policies for future app auth (read own expenses, write via approved functions only)
 - [ ] Build app UI to consume the RPC functions and analytics views
-- [ ] Before any browser key touches the project: the 7 analytics views were created without `security_invoker`, so they run as owner and bypass base-table RLS (Supabase lint 0010). They must be set to `security_invoker = on` and given explicit grants first
+- [ ] Add RLS policies for `authenticated` before the app UI: the views now respect the caller's RLS, so with no policies an app session reads nothing (which is correct, but means the UI needs policies to work)
 - [ ] Promote `taxonomy_notes` from reports into candidate `behavior_tags` / `categories` rows
