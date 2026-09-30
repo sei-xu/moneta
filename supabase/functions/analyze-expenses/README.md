@@ -50,7 +50,30 @@ No SQL Editor, em ordem:
 
 - `20260930000001_create_reports_and_scheduled_analyses.sql` — tabelas `reports` e `scheduled_analyses` + enum `notification_decision_type`
 - `20260930000002_create_analysis_context_function.sql` — a RPC de pré-agregação
-- `20260930000003_schedule_analysis_jobs.sql` — os dois jobs de cron (**substitua `<project-ref>` e `<WORKER_SECRET>` antes de rodar**)
+- `20260930000003_schedule_analysis_jobs.sql` — os jobs de cron (**substitua `<project-ref>`**; o segredo vem do Vault, ver abaixo)
+
+### 1b. O segredo do cron (Vault)
+
+O `pg_cron` roda dentro do Postgres, que **não** enxerga um `.env` nem os secrets das Edge Functions. Para não hardcodar o valor no SQL do job (onde ele ficaria visível em `cron.job.command` e no dashboard), guarde-o uma vez no Vault:
+
+```sql
+select vault.create_secret(
+  '<mesmo valor do WORKER_SECRET>',
+  'worker_secret',
+  'Shared secret for pg_cron -> Edge Function calls'
+);
+```
+
+Os jobs decifram na hora de rodar. Para trocar depois:
+
+```sql
+select vault.update_secret(
+  (select id from vault.secrets where name = 'worker_secret'),
+  '<novo valor>'
+);
+```
+
+Lembre de manter esse valor igual ao secret `WORKER_SECRET` das Edge Functions — é a divergência entre os dois que derrubou o job do `process-receipts` (ver o fim deste arquivo).
 
 ### 2. Deploy
 
@@ -91,6 +114,17 @@ Esperado: uma linha nova em `reports` e — conforme `notification_decision` —
 
 Logs: `supabase functions logs analyze-expenses`.
 
-## Cron quebrado que esta migração corrige
+## Dois jobs quebrados que esta migração corrige
 
-A migração `20260724000011` agendava o `notify-pending-review` com `current_setting('app.supabase_url')` e `current_setting('app.service_role_key')` — GUCs que nenhuma migração define, então o job levantava exceção a cada tick e o lembrete diário nunca saía. A `20260930000003` reagenda os três jobs no padrão que funciona: URL literal + header `x-worker-secret`.
+Descobertos ao agendar a análise, inspecionando `net._http_response`: **todas** as respostas retidas eram 401.
+
+1. **`process-receipts`** — o job tinha um `WORKER_SECRET` hardcodado que **não** corresponde ao secret implantado nas Edge Functions. Todo tick do cron levava 401, ou seja, o processamento agendado da fila nunca funcionou; ela só avançava quando você mandava `/processar` no bot (aí é function→function, os dois lados leem o mesmo env e sempre batem).
+2. **`notify-pending-review-daily`** — a migração `20260724000011` usava `current_setting('app.supabase_url')` e `current_setting('app.service_role_key')`, GUCs que nenhuma migração define. Na prática o job nem chegou a existir: só `process-receipts` aparecia em `cron.job`.
+
+A `20260930000003` recria os quatro jobs lendo o segredo do Vault, o que elimina a classe inteira do problema — não há mais duas cópias do valor para divergirem.
+
+Para conferir se os ticks estão de fato passando:
+
+```sql
+select status_code, count(*), max(created) from net._http_response group by status_code;
+```
