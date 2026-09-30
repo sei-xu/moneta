@@ -23,11 +23,20 @@ Alternativamente, com a [CLI do Supabase](https://supabase.com/docs/guides/local
 - **`pending_expenses`** — entrada bruta (texto ou imagem) aguardando resolução; `status` inicia como `'pending'` (demais valores: `waiting_user`, `done`, `discarded`, `error`).
 - **Bucket `receipts`** (Storage) — privado, limite de 10 MB por arquivo, aceita jpeg/png/webp/heic e PDF.
 - **`resolve_pending_expense(uuid, jsonb, jsonb)`** — RPC transacional usada pelo pipeline para gravar `expenses` + `expense_items` e fechar a pendência.
+- **`reports`** e **`scheduled_analyses`** — relatórios da análise agendada e os follow-ups que ela marca para si mesma.
+- **`get_analysis_context(date, date)`** — pré-agrega o período para o prompt da análise.
+
+## Testes
+
+- `deno test supabase/functions/analyze-expenses/` — lógica pura do worker de análise.
+- `tests/analysis_checks.sql` — verificação do SQL da análise; cole inteiro no SQL Editor (semeia, afirma e faz rollback).
 
 ## Edge Functions
 
 - **`telegram-ingest`** — bot do Telegram: ingestão de recibos no bucket + `pending_expenses`, e tratamento das respostas às perguntas do worker. Setup em `functions/telegram-ingest/README.md`.
 - **`process-receipts`** — worker agendado (pg_cron) que processa a fila com o Gemini e grava as despesas. Setup em `functions/process-receipts/README.md`.
+- **`analyze-expenses`** — worker agendado (pg_cron) que analisa um período e grava um relatório em `reports`, decidindo sozinho se notifica no Telegram. Setup em `functions/analyze-expenses/README.md`.
+- **`notify-pending-review`** — lembrete diário de pendências sem revisão.
 
 ## Acesso e RLS
 

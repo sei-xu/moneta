@@ -1,0 +1,11 @@
+supabase/.temp/
+
+# Edge Function secrets, loaded with:
+#   supabase secrets set --env-file supabase/.env
+supabase/.env
+
+# App
+app/node_modules/
+app/dist/
+app/.env
+app/.env.local

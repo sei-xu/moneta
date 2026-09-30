@@ -41,39 +41,20 @@ Além das migrações iniciais, aplique no SQL Editor:
 ### 2. Secrets e deploy
 
 ```sh
-WORKER_SECRET=$(openssl rand -hex 32)
-echo "WORKER_SECRET=$WORKER_SECRET"   # guarde — vai no agendamento do passo 3
-
-supabase secrets set \
-  GEMINI_API_KEY=<chave do AI Studio (projeto SEM billing)> \
-  WORKER_SECRET=$WORKER_SECRET
+supabase secrets set GEMINI_API_KEY=<chave do AI Studio (projeto SEM billing)>
 # TELEGRAM_BOT_TOKEN já está definido pelo telegram-ingest
 # opcionais: GEMINI_MODEL, WORKER_BATCH_SIZE, WORKER_DAILY_BUDGET, WORKER_MAX_ATTEMPTS
 
 supabase functions deploy process-receipts --no-verify-jwt
 ```
 
+O segredo que autentica a chamada do cron **não** é um secret de Edge Function: ele vive só no Vault e esta função o lê pela RPC `public.worker_secret()`. Ver [`../analyze-expenses/README.md`](../analyze-expenses/README.md#1b-o-segredo-compartilhado-vault-fonte-única).
+
 > **Modelo padrão**: `gemini-3.6-flash` (a geração atual no momento em que este worker foi escrito). O Google aposenta modelos com frequência e chaves novas costumam ficar bloqueadas nas versões antigas — se aparecer o erro "this model is no longer available to new users" (visível na mensagem de ⚠️ do bot), confira o nome atual em [ai.google.dev/gemini-api/docs/models](https://ai.google.dev/gemini-api/docs/models) e ajuste com `supabase secrets set GEMINI_MODEL=<nome atual>` — sem precisar alterar código.
 
 ### 3. Agendar com pg_cron
 
-No SQL Editor (substitua `<project-ref>` e `<WORKER_SECRET>`):
-
-```sql
-create extension if not exists pg_cron;
-create extension if not exists pg_net;
-
-select cron.schedule(
-  'process-receipts',
-  '*/10 * * * *',
-  $$
-  select net.http_post(
-    url := 'https://<project-ref>.supabase.co/functions/v1/process-receipts',
-    headers := jsonb_build_object('x-worker-secret', '<WORKER_SECRET>')
-  );
-  $$
-);
-```
+Este job é agendado junto com os demais pela migração `20260930000003_schedule_analysis_jobs.sql` (substitua só `<project-ref>`; o segredo vem do Vault). Não agende à mão com o valor embutido — foi exatamente assim que este job passou semanas devolvendo 401 sem ninguém perceber.
 
 Para pausar: `select cron.unschedule('process-receipts');`
 
@@ -83,7 +64,7 @@ O ciclo de dúvidas usa botões (`callback_query`), então reregistre o webhook 
 
 ## Testar
 
-1. Envie um recibo pelo bot e aguarde o próximo ciclo do cron (ou dispare manualmente: `curl -H "x-worker-secret: $WORKER_SECRET" https://<project-ref>.supabase.co/functions/v1/process-receipts`).
+1. Envie um recibo pelo bot e aguarde o próximo ciclo do cron (ou mande `/processar` no bot, que dispara na hora).
 2. Esperado: mensagem "💾 ... registrado" no chat, linha em `expenses` (+ `expense_items` se o recibo discriminar), e a pendência com `status = 'done'`.
 3. Envie o mesmo recibo de novo para ver o fluxo de duplicata (pergunta com botões).
 
