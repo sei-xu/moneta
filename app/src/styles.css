@@ -115,6 +115,14 @@ button.action:hover { background: var(--surface-2); }
 .report ul { margin: 6px 0 14px; padding-left: 20px; }
 .report pre { white-space: pre-wrap; font: inherit; background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 14px; }
 
+.taxonomy-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.taxonomy-item {
+  display: flex; justify-content: space-between; align-items: flex-start; gap: 14px;
+  padding: 12px 14px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px;
+}
+.taxonomy-item p { margin: 4px 0 0; font-size: 14px; }
+.taxonomy-item button { flex: none; }
+
 .signin { max-width: 380px; margin: 14vh auto; text-align: center; }
 .signin form { display: flex; gap: 8px; margin-top: 16px; }
 .signin input { flex: 1; }

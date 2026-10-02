@@ -77,6 +77,42 @@ export interface PaymentUsageRow {
 
 export type NotificationDecision = "silent" | "report_ready" | "observation";
 
+export type TaxonomyNoteKind = "behavior_tag" | "category";
+
+export interface TaxonomyNote {
+  kind: TaxonomyNoteKind;
+  name: string;
+  rationale: string;
+  trigger_pattern?: string | null;
+  example_merchants?: string[] | null;
+  parent_category?: string | null;
+}
+
+export type TaxonomyCandidateStatus = "candidate" | "approved" | "rejected";
+
+export interface BehaviorTag {
+  id: string;
+  name: string;
+  slug: string;
+  description: string | null;
+  trigger_pattern: string | null;
+  example_items: string[];
+  status: TaxonomyCandidateStatus;
+  source_report_id: string | null;
+  created_at: string;
+  reviewed_at: string | null;
+}
+
+export interface CategoryCandidate {
+  id: string;
+  name: string;
+  slug: string;
+  description: string | null;
+  status: TaxonomyCandidateStatus;
+  source_report_id: string | null;
+  parent_id: string | null;
+}
+
 export interface ForwardLookingItem {
   topic?: string;
   question?: string;
@@ -91,7 +127,7 @@ export interface Report {
   headline: string | null;
   changes: string[];
   consistencies: string[];
-  taxonomy_notes: string[];
+  taxonomy_notes: (string | TaxonomyNote)[];
   forward_looking: ForwardLookingItem[];
   full_content: string | null;
   notification_decision: NotificationDecision;

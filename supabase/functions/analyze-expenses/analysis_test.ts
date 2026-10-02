@@ -13,6 +13,7 @@ import {
   notificationMessage,
   parseAnalysis,
   previousIsoWeek,
+  taxonomyCandidatesFrom,
 } from "./analysis.ts";
 
 function validPayload(overrides: Record<string, unknown> = {}) {
@@ -156,6 +157,84 @@ Deno.test("notificationMessage points to /relatorio when a report is ready", () 
   const text = notificationMessage(result, { start: "2026-09-21", end: "2026-09-27" })!;
   assertStringIncludes(text, "/relatorio");
   assertStringIncludes(text, "2026-09-21");
+});
+
+Deno.test("parseAnalysis accepts structured taxonomy_notes objects", () => {
+  const result = parseAnalysis(validPayload({
+    taxonomy_notes: [
+      {
+        kind: "behavior_tag",
+        name: "Compra por impulso",
+        rationale: "Picos fora do padrão em compras pequenas de madrugada.",
+        trigger_pattern: "horário entre 00h-04h",
+        example_merchants: ["Loja X"],
+      },
+      {
+        kind: "category",
+        name: "Pet Shop",
+        rationale: "Gasto recorrente sem categoria própria.",
+        parent_category: "Saúde",
+      },
+    ],
+  }));
+  assertEquals(result.taxonomy_notes.length, 2);
+  assertEquals(result.taxonomy_notes[0].kind, "behavior_tag");
+  assertEquals(result.taxonomy_notes[0].name, "Compra por impulso");
+  assertEquals(result.taxonomy_notes[1].kind, "category");
+  assertEquals(result.taxonomy_notes[1].parent_category, "Saúde");
+});
+
+Deno.test("parseAnalysis normalizes a legacy string taxonomy_notes entry", () => {
+  const result = parseAnalysis(validPayload({
+    taxonomy_notes: ["Assinaturas de streaming"],
+  }));
+  assertEquals(result.taxonomy_notes, [
+    { kind: "behavior_tag", name: "Assinaturas de streaming", rationale: "" },
+  ]);
+});
+
+Deno.test("parseAnalysis rejects a taxonomy_notes kind outside the enum", () => {
+  assertThrows(
+    () =>
+      parseAnalysis(validPayload({
+        taxonomy_notes: [{ kind: "venue", name: "X", rationale: "Y" }],
+      })),
+    Error,
+    "invalid taxonomy_notes kind",
+  );
+});
+
+Deno.test("taxonomyCandidatesFrom separates behavior tags from categories and slugifies without accents", () => {
+  const result = parseAnalysis(validPayload({
+    taxonomy_notes: [
+      { kind: "behavior_tag", name: "Compra por impulso", rationale: "r1" },
+      { kind: "category", name: "Saúde Animal", rationale: "r2" },
+    ],
+  })) as AnalysisResult;
+
+  const candidates = taxonomyCandidatesFrom(result, "report-1");
+  assertEquals(candidates.length, 2);
+  assertEquals(candidates[0].kind, "behavior_tag");
+  assertEquals(candidates[0].slug, "compra-por-impulso");
+  assertEquals(candidates[1].kind, "category");
+  assertEquals(candidates[1].slug, "saude-animal");
+});
+
+Deno.test("taxonomyCandidatesFrom deduplicates by slug within the same report", () => {
+  const result = parseAnalysis(validPayload({
+    taxonomy_notes: [
+      { kind: "behavior_tag", name: "Compra por Impulso", rationale: "r1" },
+      { kind: "behavior_tag", name: "compra por impulso!", rationale: "r2" },
+    ],
+  })) as AnalysisResult;
+
+  const candidates = taxonomyCandidatesFrom(result, "report-1");
+  assertEquals(candidates.length, 1);
+});
+
+Deno.test("taxonomyCandidatesFrom returns an empty list when there are no notes (the normal case)", () => {
+  const result = parseAnalysis(validPayload({ taxonomy_notes: [] })) as AnalysisResult;
+  assertEquals(taxonomyCandidatesFrom(result, "report-1"), []);
 });
 
 Deno.test("notificationMessage delivers the finding itself on an observation", () => {

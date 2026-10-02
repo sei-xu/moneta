@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { supabase } from "../lib/supabase";
 import { date } from "../lib/format";
-import type { Report } from "../lib/types";
+import type { Report, TaxonomyNote } from "../lib/types";
 import { Empty, ErrorBox, Panel } from "../components/common";
 
 function Section({ title, items }: { title: string; items: string[] }) {
@@ -11,6 +11,30 @@ function Section({ title, items }: { title: string; items: string[] }) {
       <h4 style={{ margin: "12px 0 2px", fontSize: 14 }}>{title}</h4>
       <ul>
         {items.map((item, i) => <li key={i}>{item}</li>)}
+      </ul>
+    </>
+  );
+}
+
+// taxonomy_notes predates its structured form — older reports still have
+// plain strings, so both shapes are rendered here rather than migrated.
+function TaxonomySection({ items }: { items: (string | TaxonomyNote)[] }) {
+  if (!items || items.length === 0) return null;
+  return (
+    <>
+      <h4 style={{ margin: "12px 0 2px", fontSize: 14 }}>Notas de taxonomia</h4>
+      <ul>
+        {items.map((item, i) => {
+          if (typeof item === "string") return <li key={i}>{item}</li>;
+          const kindLabel = item.kind === "category" ? "Categoria" : "Tag de comportamento";
+          return (
+            <li key={i}>
+              <strong>{item.name}</strong>{" "}
+              <span style={{ color: "var(--text-muted)", fontSize: 12 }}>({kindLabel})</span>
+              {item.rationale ? ` — ${item.rationale}` : ""}
+            </li>
+          );
+        })}
       </ul>
     </>
   );
@@ -77,7 +101,7 @@ export function Relatorios() {
                   <>
                     <Section title="O que mudou" items={r.changes} />
                     <Section title="O que se manteve" items={r.consistencies} />
-                    <Section title="Notas de taxonomia" items={r.taxonomy_notes} />
+                    <TaxonomySection items={r.taxonomy_notes} />
                     {r.forward_looking?.length > 0
                       ? (
                         <>

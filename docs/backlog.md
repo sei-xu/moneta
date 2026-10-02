@@ -6,7 +6,15 @@ Itens são identificados pelo título, com data de início; ao resolver, ganham 
 
 ## Em aberto
 
-Nada aqui por enquanto. Este arquivo foi criado em 2026-09-30 e nenhum item foi registrado ainda.
+### `expense_behavior_tags` existe mas nada a preenche
+Início: 2026-10-02.
+
+A migração `20260930000007_create_behavior_tags.sql` criou `expense_behavior_tags` (associação
+N:N entre `expenses` e `behavior_tags`, com `confidence`/`reasoning`/`source`) junto com
+`behavior_tags`, porque uma tabela de tags sem associação não serve para nada depois — mas nenhum
+código escreve nela ainda. Aplicar um `behavior_tag` aprovado a despesas específicas (automaticamente
+pela IA ou manualmente) é trabalho futuro, fora do escopo da promoção de candidatos entregue junto
+com esta tabela.
 
 ## Resolvidos
 

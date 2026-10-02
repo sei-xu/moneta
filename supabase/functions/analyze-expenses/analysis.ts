@@ -12,11 +12,27 @@ export interface ForwardLookingItem {
   revisit_in_days?: number | null;
 }
 
+export type TaxonomyNoteKind = "behavior_tag" | "category";
+
+/**
+ * A candidate addition to the taxonomy. `behavior_tag` is the common case
+ * (a recurring pattern across merchants); `category` is for a venue that is
+ * genuinely missing from the fixed categories and should be rare.
+ */
+export interface TaxonomyNote {
+  kind: TaxonomyNoteKind;
+  name: string;
+  rationale: string;
+  trigger_pattern?: string | null;
+  example_merchants?: string[] | null;
+  parent_category?: string | null;
+}
+
 export interface AnalysisResult {
   headline: string;
   changes: string[];
   consistencies: string[];
-  taxonomy_notes: string[];
+  taxonomy_notes: TaxonomyNote[];
   forward_looking: ForwardLookingItem[];
   full_content: string;
   notification_decision: NotificationDecision;
@@ -69,7 +85,22 @@ export const ANALYSIS_SCHEMA = {
     headline: { type: "string" },
     changes: { type: "array", items: { type: "string" } },
     consistencies: { type: "array", items: { type: "string" } },
-    taxonomy_notes: { type: "array", items: { type: "string" } },
+    taxonomy_notes: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          kind: { type: "string", enum: ["behavior_tag", "category"] },
+          name: { type: "string" },
+          rationale: { type: "string" },
+          trigger_pattern: { type: "string" },
+          example_merchants: { type: "array", items: { type: "string" } },
+          parent_category: { type: "string" },
+        },
+        required: ["kind", "name", "rationale"],
+        additionalProperties: false,
+      },
+    },
     forward_looking: {
       type: "array",
       items: {
@@ -110,7 +141,7 @@ Preencha os campos assim:
 - headline: uma frase que resuma o período.
 - changes: o que mudou em relação à média das 4 semanas anteriores (aumentos, quedas, categorias novas).
 - consistencies: padrões que se mantiveram — o que é estrutural e não ruído.
-- taxonomy_notes: candidatos a novas tags de comportamento ou categorias, quando um agrupamento relevante não cabe nas categorias atuais. Lista vazia é a resposta normal.
+- taxonomy_notes: candidatos a novas tags de comportamento ou categorias, quando um agrupamento relevante não cabe nas categorias atuais. Lista vazia é a resposta normal. Cada item é um objeto com kind ('behavior_tag' ou 'category'), name, rationale (por que vale a pena), e opcionalmente trigger_pattern e example_merchants para behavior_tag, ou parent_category para category. 'behavior_tag' é o caso comum — um padrão de comportamento que se repete entre comerciantes; 'category' é para um tipo de estabelecimento genuinamente ausente das categorias atuais e deve ser raro.
 - forward_looking: pontos que merecem ser revisitados. Use revisit_in_days para pedir um acompanhamento futuro; omita quando for só uma observação.
 - full_content: o relatório completo em markdown.
 - model_notes: limitações dos dados que afetaram a análise.
@@ -134,6 +165,44 @@ function asStringArray(value: unknown, field: string): string[] {
   if (value === undefined || value === null) return [];
   if (!Array.isArray(value)) throw new Error(`${field} is not an array`);
   return value.map(String);
+}
+
+/**
+ * Accepts both the current object form and the legacy string form (reports
+ * stored before this contract changed) — a bare string becomes a
+ * behavior_tag note with no rationale, which is the closest honest reading.
+ */
+function parseTaxonomyNotes(value: unknown): TaxonomyNote[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw new Error("taxonomy_notes is not an array");
+
+  return value.map((item) => {
+    if (typeof item === "string") {
+      return { kind: "behavior_tag" as const, name: item, rationale: "" };
+    }
+
+    const obj = (item ?? {}) as Record<string, unknown>;
+    const kind = obj.kind;
+    if (kind !== "behavior_tag" && kind !== "category") {
+      throw new Error(`invalid taxonomy_notes kind: ${String(kind)}`);
+    }
+    const name = typeof obj.name === "string" ? obj.name : "";
+    if (name.trim() === "") {
+      throw new Error("taxonomy_notes item has no name");
+    }
+
+    const note: TaxonomyNote = {
+      kind,
+      name,
+      rationale: typeof obj.rationale === "string" ? obj.rationale : "",
+    };
+    if (typeof obj.trigger_pattern === "string") note.trigger_pattern = obj.trigger_pattern;
+    if (Array.isArray(obj.example_merchants)) {
+      note.example_merchants = obj.example_merchants.map(String);
+    }
+    if (typeof obj.parent_category === "string") note.parent_category = obj.parent_category;
+    return note;
+  });
 }
 
 /**
@@ -185,7 +254,7 @@ export function parseAnalysis(raw: string): AnalysisResult {
     headline,
     changes: asStringArray(parsed.changes, "changes"),
     consistencies: asStringArray(parsed.consistencies, "consistencies"),
-    taxonomy_notes: asStringArray(parsed.taxonomy_notes, "taxonomy_notes"),
+    taxonomy_notes: parseTaxonomyNotes(parsed.taxonomy_notes),
     forward_looking,
     full_content: typeof parsed.full_content === "string" ? parsed.full_content : "",
     notification_decision: decision,
@@ -213,6 +282,80 @@ export function followUpsFrom(
       run_at: new Date(now.getTime() + item.revisit_in_days! * DAY_MS).toISOString(),
       prompt: `${item.topic}: ${item.question}`,
     }));
+}
+
+export interface BehaviorTagCandidate {
+  kind: "behavior_tag";
+  name: string;
+  slug: string;
+  description: string;
+  trigger_pattern: string | null;
+  example_items: string[];
+  source_report_id: string;
+}
+
+export interface CategoryCandidate {
+  kind: "category";
+  name: string;
+  slug: string;
+  description: string;
+  parent_category_name: string | null;
+  source_report_id: string;
+}
+
+export type TaxonomyCandidate = BehaviorTagCandidate | CategoryCandidate;
+
+function slugify(name: string): string {
+  return name
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+/**
+ * Turns taxonomy_notes into rows ready for behavior_tags/categories. Pure:
+ * does not resolve parent_category_name to a parent_id, that needs a lookup
+ * against the live categories table and belongs to the worker. Deduplicates
+ * by slug within the same report — a re-run of the same week must not stack
+ * copies of the same candidate.
+ */
+export function taxonomyCandidatesFrom(
+  result: AnalysisResult,
+  sourceReportId: string,
+): TaxonomyCandidate[] {
+  const seen = new Set<string>();
+  const candidates: TaxonomyCandidate[] = [];
+
+  for (const note of result.taxonomy_notes) {
+    const slug = slugify(note.name);
+    if (!slug || seen.has(slug)) continue;
+    seen.add(slug);
+
+    if (note.kind === "behavior_tag") {
+      candidates.push({
+        kind: "behavior_tag",
+        name: note.name,
+        slug,
+        description: note.rationale,
+        trigger_pattern: note.trigger_pattern ?? null,
+        example_items: note.example_merchants ?? [],
+        source_report_id: sourceReportId,
+      });
+    } else {
+      candidates.push({
+        kind: "category",
+        name: note.name,
+        slug,
+        description: note.rationale,
+        parent_category_name: note.parent_category ?? null,
+        source_report_id: sourceReportId,
+      });
+    }
+  }
+
+  return candidates;
 }
 
 /**

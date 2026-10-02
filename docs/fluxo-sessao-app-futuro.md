@@ -91,3 +91,8 @@ Notas:
 - O ramo de análise semanal (`CRW` em diante) já está implementado como a Edge Function
   `analyze-expenses` — o nó `POST /analyse` corresponde hoje a uma chamada agendada por `pg_cron`,
   não a uma rota HTTP. Ver [`docs/automacoes-futuras.md`](automacoes-futuras.md).
+- O ramo `WE`/`WF`/`WG` (promoção de `taxonomy_notes` a candidato) também já existe: o próprio
+  worker insere o candidato logo depois de `WD`, sem passo humano nesse ponto. A aprovação é
+  humana, mas vem depois e fora deste diagrama — via `/taxonomia` no Telegram ou a aba
+  "Taxonomia" do app, ambos chamando `review_taxonomy_candidate()`. Ver
+  [`docs/automacoes-futuras.md`](automacoes-futuras.md).
