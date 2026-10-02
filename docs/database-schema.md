@@ -76,6 +76,10 @@ color (text) - Tailwind color class (e.g., "blue-500")
 icon (text) - emoji or icon identifier
 is_active (boolean) - soft-delete flag
 sort_order (integer) - display order in UI
+status (text) - 'candidate' (proposed by analysis), 'approved' or 'rejected'; defaults to
+  'approved' so the 50 seeded categories are unaffected (migration 20260930000007)
+source_report_id (uuid) FK → reports, on delete set null - the report that proposed this
+  category, when status started as 'candidate'
 created_at (timestamptz)
 updated_at (timestamptz)
 ```
@@ -140,7 +144,10 @@ report_type (text) - 'weekly' (scheduled run) or 'followup' (scheduled_analyses 
 headline (text) - one-sentence summary of the period
 changes (jsonb) - what moved against the 4-week baseline
 consistencies (jsonb) - patterns that held
-taxonomy_notes (jsonb) - candidate behaviour tags / categories (read by the user, not auto-applied)
+taxonomy_notes (jsonb) - array of {kind, name, rationale, trigger_pattern?, example_merchants?, parent_category?};
+  kind is 'behavior_tag' or 'category'. Reports written before migration 20260930000007 store plain
+  strings instead — parseAnalysis and the Relatórios screen read both forms. Each note is promoted by
+  the worker to a candidate row in behavior_tags or categories (see below)
 forward_looking (jsonb) - items to revisit; those with revisit_in_days become scheduled_analyses
 full_content (text) - the full report in markdown
 notification_decision (notification_decision_type) - 'silent', 'report_ready' or 'observation'
@@ -164,6 +171,36 @@ source_report_id (uuid) FK → reports - the report that requested it
 report_id (uuid) FK → reports - the report it produced
 error_message (text)
 created_at (timestamptz)
+```
+
+### `behavior_tags`
+Behavioral tags proposed by the weekly analysis (migration `20260930000007`).
+
+```sql
+id (uuid) primary key
+name (text)
+slug (text) unique
+description (text)
+trigger_pattern (text) - what makes an expense match this tag, per the analysis
+example_items (jsonb) - merchant/item examples the analysis cited as evidence
+status (text) - 'candidate', 'approved' or 'rejected'
+source_report_id (uuid) FK → reports, on delete set null - the report that proposed it
+created_at (timestamptz)
+reviewed_at (timestamptz) - set by review_taxonomy_candidate()
+```
+
+### `expense_behavior_tags`
+Which behavior tags apply to which expenses, and how confidently. Created alongside
+`behavior_tags`, but nothing writes to it yet — see `docs/backlog.md`.
+
+```sql
+expense_id (uuid) FK → expenses, on delete cascade
+behavior_tag_id (uuid) FK → behavior_tags, on delete cascade
+confidence (numeric)
+reasoning (text)
+source (text)
+created_at (timestamptz)
+-- primary key (expense_id, behavior_tag_id)
 ```
 
 ## Analytics Views
@@ -294,6 +331,18 @@ p_changed_fields, p_source, p_user_id, p_error_message, p_metadata
 returns: audit_log.id
 ```
 
+### `review_taxonomy_candidate(text, uuid, text)`
+Approve or reject a `behavior_tags`/`categories` candidate. The one write door for this flow — the
+app has no insert/update policy on either table. SECURITY DEFINER; callable by `service_role`
+(the Telegram bot) or by an `authenticated` caller on the `app_users` allowlist.
+
+```sql
+p_kind: 'behavior_tag' | 'category'
+p_id: behavior_tags.id or categories.id
+p_action: 'approved' | 'rejected'
+returns: void -- updates status (+ reviewed_at for behavior_tag), logs to audit_log
+```
+
 ## Indexes
 
 **Performance optimization** — all tables have strategic indexes:
@@ -326,21 +375,20 @@ All tables have RLS enabled with **no policies** (restrictive by default):
 - `pending_expenses.status` IN ('pending', 'waiting_user', 'done', 'discarded', 'error')
 - `user_feedback.feedback_type` IN ('duplicate_corrected', 'category_corrected', ...)
 - `audit_log.action` IN ('insert', 'update', 'delete', 'manual_review', 'reclassify', 'user_resolved', 'error_state')
+- `behavior_tags.status` and `categories.status` IN ('candidate', 'approved', 'rejected')
 
 ## Schema Futuro (Planejado)
 
-> Não migrado ainda. Extensões previstas pelo escopo original (parcelas, tags comportamentais,
-> análise semanal) — ver [`docs/planejamento.md`](planejamento.md) e
-> [`docs/automacoes-futuras.md`](automacoes-futuras.md).
+> Não migrado ainda. Extensões previstas pelo escopo original (parcelas, análise semanal) — ver
+> [`docs/planejamento.md`](planejamento.md) e [`docs/automacoes-futuras.md`](automacoes-futuras.md).
 
-- **`behavior_tags`** — tags comportamentais candidatas/aprovadas (ex.: "compra por impulso"), com `trigger_pattern` e `example_items`
-- **`expense_behavior_tags`** — associação N:N entre `expenses`/`expense_items` e `behavior_tags`, com `confidence` e `reasoning` de quem aplicou (IA ou usuário)
 - **`planned_expenses`** — gastos futuros previstos (parcelas, assinaturas), com `expected_at`, `installment_number`/`installments_total` e `resolved_expense_id` quando efetivado
 - **`installments`** — parcelas individuais de uma `expense`, com `due_at` e `paid`
 - **`settings`** — configurações chave/valor (ex.: orçamento por categoria)
 
 > `reports` e `scheduled_analyses` saíram desta lista: foram migradas em
-> `20260930000001` — ver [Analysis & Reports](#analysis--reports).
+> `20260930000001` — ver [Analysis & Reports](#analysis--reports). `behavior_tags` e
+> `expense_behavior_tags` saíram em `20260930000007` — ver a mesma seção.
 
 Também previstas em `expenses` (ainda não migradas): `original_amount`/`original_currency` (para
 gastos em moeda estrangeira), `installment_number`/`installments_total`, `is_gift`.
@@ -375,31 +423,31 @@ erDiagram
     categories {
         uuid id PK
         text name
-        uuid parent_category_id FK
+        uuid parent_id FK
         text color
         text icon
-        text created_by
         text status
+        uuid source_report_id FK
         timestamptz created_at
     }
     behavior_tags {
         uuid id PK
         text name
+        text slug
         text trigger_pattern
         jsonb example_items
-        text created_by
         text status
+        uuid source_report_id FK
         timestamptz created_at
+        timestamptz reviewed_at
     }
     expense_behavior_tags {
-        uuid id PK
-        uuid behavior_tag_id FK
         uuid expense_id FK
-        uuid expense_item_id FK
-        float confidence
-        text applied_by
+        uuid behavior_tag_id FK
+        numeric confidence
         text reasoning
-        timestamptz applied_at
+        text source
+        timestamptz created_at
     }
     payment_methods {
         uuid id PK
@@ -474,7 +522,8 @@ erDiagram
     expenses ||--o{ expense_items : "has"
     behavior_tags ||--o{ expense_behavior_tags : "applied via"
     expenses ||--o{ expense_behavior_tags : "tagged via"
-    expense_items ||--o{ expense_behavior_tags : "tagged via"
+    reports ||--o{ behavior_tags : "proposes"
+    reports ||--o{ categories : "proposes"
     payment_methods ||--o{ expenses : "used in"
     payment_methods ||--o{ planned_expenses : "used in"
     expenses ||--o{ installments : "generates"

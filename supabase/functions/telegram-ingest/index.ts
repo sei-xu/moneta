@@ -217,6 +217,60 @@ async function sendLatestReport(chatId: number) {
   }
 }
 
+interface TaxonomyCandidateRow {
+  kind: "behavior_tag" | "category";
+  id: string;
+  name: string;
+  description: string | null;
+}
+
+async function fetchTaxonomyCandidates(): Promise<TaxonomyCandidateRow[]> {
+  const [tags, categories] = await Promise.all([
+    supabase.from("behavior_tags").select("id, name, description").eq("status", "candidate"),
+    supabase.from("categories").select("id, name, description").eq("status", "candidate"),
+  ]);
+  if (tags.error) throw new Error(`behavior_tags fetch failed: ${tags.error.message}`);
+  if (categories.error) throw new Error(`categories fetch failed: ${categories.error.message}`);
+
+  return [
+    ...(tags.data ?? []).map((r) => ({ kind: "behavior_tag" as const, ...r })),
+    ...(categories.data ?? []).map((r) => ({ kind: "category" as const, ...r })),
+  ];
+}
+
+async function sendTaxonomyCandidate(chatId: number, candidate: TaxonomyCandidateRow) {
+  const label = candidate.kind === "behavior_tag" ? "🏷️ Tag de comportamento" : "📂 Categoria";
+  const text = `${label}: ${candidate.name}${candidate.description ? `\n${candidate.description}` : ""}`;
+  await tg("sendMessage", {
+    chat_id: chatId,
+    text,
+    reply_markup: {
+      inline_keyboard: [[
+        { text: "✅ Aprovar", callback_data: `tax:${candidate.kind}:${candidate.id}:approved` },
+        { text: "❌ Rejeitar", callback_data: `tax:${candidate.kind}:${candidate.id}:rejected` },
+      ]],
+    },
+  });
+}
+
+async function startTaxonomyReview(chatId: number) {
+  const candidates = await fetchTaxonomyCandidates();
+  if (candidates.length === 0) {
+    await tg("sendMessage", {
+      chat_id: chatId,
+      text: "✨ Sem candidatos de taxonomia pendentes.",
+    });
+    return;
+  }
+  await tg("sendMessage", {
+    chat_id: chatId,
+    text: `📌 ${candidates.length} candidato(s) de taxonomia para revisar`,
+  });
+  for (const candidate of candidates) {
+    await sendTaxonomyCandidate(chatId, candidate);
+  }
+}
+
 async function triggerAnalysis(chatId: number) {
   let secret: string;
   try {
@@ -272,6 +326,7 @@ const PROCESS_COMMANDS = new Set(["/processar", "processar agora"]);
 const REVIEW_COMMANDS = new Set(["/revisar", "revisar"]);
 const REPORT_COMMANDS = new Set(["/relatorio", "relatorio", "ultimo relatorio"]);
 const ANALYZE_COMMANDS = new Set(["/analisar", "analisar agora"]);
+const TAXONOMY_COMMANDS = new Set(["/taxonomia", "taxonomia", "candidatos de taxonomia"]);
 
 interface PendingExpense {
   id: string;
@@ -439,6 +494,10 @@ async function handleCommand(msg: TelegramMessage): Promise<boolean> {
     await triggerAnalysis(msg.chat.id);
     return true;
   }
+  if (TAXONOMY_COMMANDS.has(text)) {
+    await startTaxonomyReview(msg.chat.id);
+    return true;
+  }
   return false;
 }
 
@@ -483,8 +542,23 @@ async function handleCallback(cq: TelegramCallbackQuery) {
   let answerText = "Ok";
   let newText: string | null = null;
 
+  // Taxonomy candidate review: "tax:<kind>:<id>:<action>" — four segments,
+  // so it needs the full split rather than the 3-part `parts` above.
+  if (kind === "tax") {
+    const [, taxKind, taxId, action] = (cq.data ?? "").split(":");
+    const { error } = await supabase.rpc("review_taxonomy_candidate", {
+      p_kind: taxKind,
+      p_id: taxId,
+      p_action: action,
+    });
+    if (error) {
+      answerText = "⚠️ Falha ao registrar a revisão.";
+    } else {
+      newText = action === "approved" ? "✅ Aprovado." : "❌ Rejeitado.";
+    }
+  }
   // Duplicate question from worker: "dup:<id>:<action>"
-  if (kind === "dup") {
+  else if (kind === "dup") {
     const action = parts[2];
     const { data: row } = await supabase
       .from("pending_expenses")
