@@ -34,6 +34,8 @@ The backend half of this repo has no `package.json`, no build step and no linter
   - `categories` — hierarchical expense categories (root + subcategories)
   - `reports` — reports produced by the scheduled analysis (headline + structured sections)
   - `scheduled_analyses` — follow-up analyses a report scheduled for itself
+  - `behavior_tags` — candidate/approved/rejected behavioral tags proposed by the weekly analysis
+  - `expense_behavior_tags` — which behavior tags apply to which expenses (table exists; nothing writes to it yet)
 
 - **Audit & Learning**:
   - `audit_log` — immutable log of all data changes (insert/update/delete/reclassify)
@@ -48,7 +50,7 @@ The backend half of this repo has no `package.json`, no build step and no linter
   - `duplicate_detection_log` — false positive/negative analysis
   - `audit_summary` — change tracking by source & type
 
-- **RPC Functions** (9 total):
+- **RPC Functions** (10 total):
   - `resolve_pending_expense()` — atomic expense + items insert (existing)
   - `create_manual_expense()` — create expense from app UI
   - `reclassify_expense()` — update category + audit
@@ -58,11 +60,12 @@ The backend half of this repo has no `package.json`, no build step and no linter
   - `get_top_categories_by_merchant()` — historical category lookup
   - `get_analysis_context()` — pre-aggregated period context for the analysis prompt
   - `log_audit()` — insert audit trail entries
+  - `review_taxonomy_candidate()` — approve/reject a `behavior_tags`/`categories` candidate; the only write the app is allowed, gated on `app_users`
 
 ### Edge Functions
-- `supabase/functions/telegram-ingest/` — Telegram bot: receives receipts (photo + text), compresses images, uploads to bucket, creates `pending_expenses` entries, handles user Q&A (duplicate confirmation, detail requests, category selection via inline buttons)
+- `supabase/functions/telegram-ingest/` — Telegram bot: receives receipts (photo + text), compresses images, uploads to bucket, creates `pending_expenses` entries, handles user Q&A (duplicate confirmation, detail requests, category selection via inline buttons), and `/taxonomia` for reviewing taxonomy candidates
 - `supabase/functions/process-receipts/` — Scheduled worker (pg_cron): fetches pending receipts, calls Gemini for parsing, detects duplicates, asks user for confirmation if needed, atomically resolves via RPC, respects free-tier rate limits & daily budget
-- `supabase/functions/analyze-expenses/` — Scheduled analysis (pg_cron): pre-aggregates a period via `get_analysis_context()`, sends it to an LLM in one call, stores a structured report and lets the model's `notification_decision` govern whether the user is notified
+- `supabase/functions/analyze-expenses/` — Scheduled analysis (pg_cron): pre-aggregates a period via `get_analysis_context()`, sends it to an LLM in one call, stores a structured report, promotes `taxonomy_notes` into candidate `behavior_tags`/`categories` rows, and lets the model's `notification_decision` govern whether the user is notified
 - `supabase/functions/notify-pending-review/` — Daily reminder about pending receipts awaiting review
 
 ### Documentation
@@ -103,6 +106,7 @@ The backend half of this repo has no `package.json`, no build step and no linter
 - Provider is configuration, not code: Gemini and Kimi both speak OpenAI Chat Completions. Default is Gemini (the free-tier key already used by `process-receipts`); Kimi is opt-in via `ANALYSIS_PROVIDER=kimi` and is paid
 - `notification_decision` (`silent`/`report_ready`/`observation`) is returned by the model and decides whether a Telegram message goes out at all
 - `forward_looking` items with `revisit_in_days` become `scheduled_analyses` rows, run by an hourly poll
+- `taxonomy_notes` is a structured array (`{kind, name, rationale, trigger_pattern?, example_merchants?, parent_category?}`, `kind` is `behavior_tag` or `category`); reports from before migration `20260930000007` still hold plain strings, and `parseAnalysis`/the Relatórios screen read both. The worker promotes each note to a `status='candidate'` row in `behavior_tags`/`categories` right after storing the report — a slug that already exists in either table, in any status, is skipped. Human approval happens later, via `/taxonomia` on Telegram or the app's Taxonomia tab, both calling `review_taxonomy_candidate()`
 
 ### The worker secret
 - `pg_cron` and the Edge Functions authenticate to each other with one shared secret, and it lives in **exactly one place**: the Supabase Vault row named `worker_secret`. There is no `WORKER_SECRET` Edge Function secret — the functions read the same row through `public.worker_secret()`, a security-definer RPC granted to `service_role` only
@@ -116,8 +120,8 @@ The backend half of this repo has no `package.json`, no build step and no linter
 - [ ] Update `telegram-ingest` with `/classify` and `/review` commands for manual category selection
 - [ ] Wire up `log_audit()` calls from Edge Functions (currently manual, should be automatic)
 - [x] RLS policies for app auth — read-only for `authenticated`, gated on an `app_users` allowlist row (migration `20260930000006`). Signing up is not being allowed in: without the row, a session reads nothing
-- [x] App UI in `app/` — read-only screens over the views and tables
-- [ ] Promote `taxonomy_notes` from reports into candidate `behavior_tags` / `categories` rows
+- [x] App UI in `app/` — read-only screens over the views and tables, plus one guarded write: approving/rejecting a taxonomy candidate via `review_taxonomy_candidate()`
+- [x] Promote `taxonomy_notes` from reports into candidate `behavior_tags` / `categories` rows (migrations `20260930000007`/`20260930000008`; worker wiring in `analyze-expenses`; review via `/taxonomia` on Telegram or the app's Taxonomia tab)
 
 ## Versão
 

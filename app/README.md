@@ -2,7 +2,7 @@
 
 SPA de leitura sobre os dados do Moneta: resumo mensal, despesas com filtros, saúde da fila e os relatórios da análise. Vite + React + TypeScript, sem framework de UI.
 
-**Somente leitura.** Escrita continua nas RPCs `security definer` chamadas pelas Edge Functions; o app nunca escreve em tabela.
+**Leitura, mais aprovação de candidatos de taxonomia via RPC.** O app nunca escreve direto numa tabela — a única exceção é aprovar/rejeitar um candidato de `behavior_tags`/`categories`, e mesmo essa vai pela RPC `security definer` `review_taxonomy_candidate` (gated por `app_users`), nunca por um insert/update direto. Toda outra escrita continua nas RPCs chamadas pelas Edge Functions.
 
 ## Comandos
 
@@ -14,7 +14,7 @@ Rodar de dentro de `app/` — este é o único diretório do repositório com `p
 | `npm run dev` | servidor de desenvolvimento |
 | `npm run build` | `tsc --noEmit` + build de produção em `dist/` |
 | `npm run preview` | serve o `dist/` já construído |
-| `npm test` | Vitest (29 testes) |
+| `npm test` | Vitest (35 testes) |
 
 ## Configuração
 
@@ -41,6 +41,7 @@ Antes disso o app autentica normalmente e mostra um aviso explicando que a conta
 - **Despesas** — lista paginada com filtros de mês, categoria e forma de pagamento; clicar numa linha abre os itens do recibo.
 - **Pendências** — taxa de sucesso, fila por situação, idade do item mais antigo.
 - **Relatórios** — os relatórios da `analyze-expenses`, com seções estruturadas e o markdown completo.
+- **Taxonomia** — candidatos de `behavior_tags`/`categories` propostos pela análise semanal (`status='candidate'`), com botões Aprovar/Rejeitar.
 
 ## Notas de design
 

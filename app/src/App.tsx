@@ -5,6 +5,7 @@ import { Dashboard } from "./pages/Dashboard";
 import { Despesas } from "./pages/Despesas";
 import { Pendencias } from "./pages/Pendencias";
 import { Relatorios } from "./pages/Relatorios";
+import { Taxonomia } from "./pages/Taxonomia";
 import { Empty } from "./components/common";
 
 const TABS = {
@@ -12,6 +13,7 @@ const TABS = {
   despesas: { label: "Despesas", render: () => <Despesas /> },
   pendencias: { label: "Pendências", render: () => <Pendencias /> },
   relatorios: { label: "Relatórios", render: () => <Relatorios /> },
+  taxonomia: { label: "Taxonomia", render: () => <Taxonomia /> },
 } as const;
 
 type TabKey = keyof typeof TABS;

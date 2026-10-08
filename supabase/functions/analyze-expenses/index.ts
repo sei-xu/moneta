@@ -27,6 +27,7 @@ import {
   parseAnalysis,
   type Period,
   previousIsoWeek,
+  taxonomyCandidatesFrom,
 } from "./analysis.ts";
 
 const BOT_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN")!;
@@ -221,6 +222,99 @@ async function scheduleFollowUps(
   return followUps.length;
 }
 
+/**
+ * Promotes taxonomy_notes into behavior_tags/categories candidates. Mirrors
+ * scheduleFollowUps: a re-run of the same week must not stack duplicate
+ * candidates, so the ones this report produced last time (still unreviewed)
+ * are cleared before inserting the current set. A slug already present in
+ * either table — approved, rejected, or still pending from another report —
+ * is skipped: a reviewed candidate must not reappear.
+ */
+async function promoteTaxonomyCandidates(
+  result: AnalysisResult,
+  sourceReportId: string,
+): Promise<number> {
+  const { error: clearTagsError } = await supabase
+    .from("behavior_tags")
+    .delete()
+    .eq("source_report_id", sourceReportId)
+    .eq("status", "candidate");
+  if (clearTagsError) {
+    throw new Error(`clearing stale behavior_tag candidates failed: ${clearTagsError.message}`);
+  }
+
+  const { error: clearCategoriesError } = await supabase
+    .from("categories")
+    .delete()
+    .eq("source_report_id", sourceReportId)
+    .eq("status", "candidate");
+  if (clearCategoriesError) {
+    throw new Error(`clearing stale category candidates failed: ${clearCategoriesError.message}`);
+  }
+
+  const candidates = taxonomyCandidatesFrom(result, sourceReportId);
+  if (candidates.length === 0) return 0;
+
+  const { data: existingTags } = await supabase.from("behavior_tags").select("slug");
+  const { data: existingCategories } = await supabase.from("categories").select("name, slug");
+  const existingSlugs = new Set([
+    ...(existingTags ?? []).map((r: { slug: string }) => r.slug),
+    ...(existingCategories ?? []).map((r: { slug: string }) => r.slug),
+  ]);
+
+  const newTags = candidates.filter((c) => c.kind === "behavior_tag" && !existingSlugs.has(c.slug));
+  const newCategories = candidates.filter((c) => c.kind === "category" && !existingSlugs.has(c.slug));
+
+  let promoted = 0;
+
+  if (newTags.length > 0) {
+    const { error } = await supabase.from("behavior_tags").insert(
+      newTags.map((c) => ({
+        name: c.name,
+        slug: c.slug,
+        description: c.description,
+        trigger_pattern: c.kind === "behavior_tag" ? c.trigger_pattern : null,
+        example_items: c.kind === "behavior_tag" ? c.example_items : [],
+        source_report_id: sourceReportId,
+      })),
+    );
+    if (error) throw new Error(`behavior_tags insert failed: ${error.message}`);
+    promoted += newTags.length;
+  }
+
+  if (newCategories.length > 0) {
+    // parent_category is a name the model wrote in prose, not a stable id —
+    // resolved against the live table here, once, rather than in the pure
+    // (and therefore DB-less) taxonomyCandidatesFrom. No match just means no
+    // parent, not a failure: a candidate category is still useful unparented.
+    const rows = await Promise.all(newCategories.map(async (c) => {
+      const parentName = c.kind === "category" ? c.parent_category_name : null;
+      let parent_id: string | null = null;
+      if (parentName) {
+        const { data: parent } = await supabase
+          .from("categories")
+          .select("id")
+          .eq("name", parentName)
+          .maybeSingle();
+        parent_id = parent?.id ?? null;
+      }
+      return {
+        name: c.name,
+        slug: c.slug,
+        description: c.description,
+        status: "candidate",
+        source_report_id: sourceReportId,
+        parent_id,
+      };
+    }));
+    const { error } = await supabase.from("categories").insert(rows);
+    if (error) throw new Error(`categories insert failed: ${error.message}`);
+    promoted += newCategories.length;
+  }
+
+  return promoted;
+}
+
 async function notify(result: AnalysisResult, period: Period): Promise<boolean> {
   const text = notificationMessage(result, period);
   if (!text) return false;
@@ -239,8 +333,9 @@ async function runAnalysis(
   const result = await runModel(provider, buildPrompt(context, customPrompt));
   const reportId = await storeReport(period, reportType, result, provider);
   const scheduled = await scheduleFollowUps(result, reportId, now);
+  const promoted = await promoteTaxonomyCandidates(result, reportId);
   const notified = await notify(result, period);
-  return { reportId, decision: result.notification_decision, scheduled, notified };
+  return { reportId, decision: result.notification_decision, scheduled, promoted, notified };
 }
 
 interface ScheduledRow {

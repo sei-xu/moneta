@@ -35,19 +35,29 @@ O relatório é armazenado em `reports` (migração
 `forward_looking` que pedem acompanhamento futuro (`revisit_in_days`) viram novas linhas em
 `scheduled_analyses`, processadas pelo job de polling horário.
 
-> **Ainda não implementado**: a promoção automática de `taxonomy_notes` a linhas de `behavior_tags`
-> (comportamental, proposto com frequência normal) ou de `categories` (venue, proposto raramente,
-> já que venues devem ser estáveis). Hoje `taxonomy_notes` fica registrado no relatório e é lido
-> por você; as tabelas `behavior_tags` e `expense_behavior_tags` continuam no
-> [schema futuro](database-schema.md#schema-futuro-planejado).
+`taxonomy_notes` é um objeto estruturado desde a migração `20260930000007_create_behavior_tags.sql`
+(`{kind, name, rationale, trigger_pattern?, example_merchants?, parent_category?}`; relatórios
+gravados antes dessa migração guardam strings simples, e tanto `parseAnalysis` quanto a tela de
+Relatórios leem as duas formas). Cada nota com `kind: 'behavior_tag'` ou `kind: 'category'` é
+promovida pelo próprio worker, logo depois de salvar o relatório, a uma linha `status='candidate'`
+em `behavior_tags` ou em `categories` — `'behavior_tag'` é o caso comum; `'category'` é para um
+tipo de estabelecimento genuinamente ausente das categorias atuais e deve ser raro, já que venues
+devem ser estáveis. Um slug já existente em qualquer status (aprovado, rejeitado ou ainda candidato
+de outro relatório) não é promovido de novo, e um re-run do mesmo período substitui os candidatos
+que ele próprio havia proposto em vez de duplicá-los — o mesmo padrão já usado para
+`scheduled_analyses`. A tabela `expense_behavior_tags` existe desde a mesma migração, mas nada
+ainda a preenche (ver `docs/backlog.md`).
 
 Notificação via Telegram é decidida a cada execução pelo próprio `notification_decision` — não é
 automática. Uma semana sem nada relevante fica `silent`; um relatório padrão pronto gera
 `report_ready`; algo urgente o suficiente para não esperar gera `observation` imediata.
 
-Categorias/tags em `status = 'candidate'` esperariam aprovação do usuário, como mensagem comum
-no chat com o bot — sem endpoint novo. (Depende da promoção automática descrita acima, ainda não
-implementada.)
+Categorias/tags em `status = 'candidate'` esperam aprovação humana — via `/taxonomia` no Telegram
+(lista os pendentes com botões Aprovar/Rejeitar) ou pela aba "Taxonomia" do app. Os dois caminhos
+chamam a mesma RPC `review_taxonomy_candidate(p_kind, p_id, p_action)` (migração
+`20260930000008_review_taxonomy_candidate.sql`), que muda o `status`, grava `reviewed_at` (quando é
+`behavior_tag`) e registra em `audit_log` com `source='user_manual'`. Não existe promoção
+automática — a aprovação é sempre humana.
 
 Sob demanda, `/analisar` no bot dispara o modo `weekly` na hora e `/relatorio` lê o último
 relatório salvo.
