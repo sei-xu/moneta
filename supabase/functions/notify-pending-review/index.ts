@@ -11,9 +11,12 @@
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { authorizeWorker } from "../_shared/worker_secret.ts";
+import { buildNotifications, notificationText, orphanNote, type ReviewQueueRow } from "../_shared/review_queue.ts";
 
 const BOT_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN")!;
-const TELEGRAM_CHAT_ID = Deno.env.get("TELEGRAM_ALLOWED_CHAT_IDS")!.split(",")[0].trim();
+const ALLOWED_CHAT_IDS = Deno.env.get("TELEGRAM_ALLOWED_CHAT_IDS")!.split(",").map((s) => s.trim());
+// how old a sender's oldest reviewable row must be before they get a reminder
+const MIN_AGE_HOURS = 24;
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -32,34 +35,35 @@ async function tg(method: string, payload: Record<string, unknown>) {
 }
 
 async function notifyPendingReview() {
-  // Find pending_expenses that are:
-  // 1. status IN ('pending', 'waiting_user') — not yet resolved or discarded
-  // 2. created_at > 1 day ago — old enough to warrant a reminder
-  const oneDayAgo = new Date();
-  oneDayAgo.setUTCDate(oneDayAgo.getUTCDate() - 1);
-
-  const { count: matched, error } = await supabase
-    .from("pending_expenses")
-    .select("id", { count: "exact", head: true })
-    .in("status", ["pending", "waiting_user"])
-    .lt("created_at", oneDayAgo.toISOString());
+  // The reviewable set — waiting_user + error, across every sender — is the
+  // same one get_pending_review_queue() hands to /revisar, so the count a
+  // chat is told here always matches what /revisar then lists for it.
+  const { data, error } = await supabase.rpc("get_pending_review_queue", { p_chat_id: null });
 
   if (error) {
     console.error("fetch pending failed:", error);
     return { error: error.message };
   }
 
-  const count = matched ?? 0;
-  if (count === 0) {
-    return { notified: false, reason: "no old pending expenses" };
+  const rows = (data ?? []) as ReviewQueueRow[];
+  const { notified, orphans } = buildNotifications(rows, ALLOWED_CHAT_IDS, MIN_AGE_HOURS);
+
+  for (let i = 0; i < notified.length; i++) {
+    const { chatId, count } = notified[i];
+    let text = notificationText(count);
+    // Rows with no sender, or with a sender outside the allowlist, cannot be
+    // told apart from who actually sent them — they ride along on the
+    // first chat that gets a reminder instead of going unmentioned.
+    if (orphans > 0 && i === 0) {
+      text += `\n\n${orphanNote(orphans)}`;
+    }
+    await tg("sendMessage", { chat_id: chatId, text });
   }
 
-  await tg("sendMessage", {
-    chat_id: TELEGRAM_CHAT_ID,
-    text: `📌 Você tem ${count} gasto${count === 1 ? "" : "s"} para revisar\n\nMande /revisar para começar`,
-  });
-
-  return { notified: true, count };
+  return {
+    notified: notified.map(({ chatId, count }) => ({ chat: chatId, count })),
+    orphans,
+  };
 }
 
 Deno.serve(async (req) => {

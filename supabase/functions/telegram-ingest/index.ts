@@ -10,6 +10,7 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { Image } from "https://deno.land/x/imagescript@1.3.0/mod.ts";
 import { workerSecret } from "../_shared/worker_secret.ts";
+import { amountOf, buildReviewCard, merchantOf, type ReviewQueueRow } from "../_shared/review_queue.ts";
 
 const BOT_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN")!;
 const WEBHOOK_SECRET = Deno.env.get("TELEGRAM_WEBHOOK_SECRET")!;
@@ -99,19 +100,22 @@ interface TelegramCallbackQuery {
   message?: { message_id: number; chat: { id: number } };
 }
 
-async function countByStatus(status: string): Promise<number> {
+// Scoped to the asking chat — a global count would mix in every other
+// sender's rows, the same defect that made the daily reminder meaningless.
+async function countByStatus(status: string, chatId: number): Promise<number> {
   const { count } = await supabase
     .from("pending_expenses")
     .select("id", { count: "exact", head: true })
-    .eq("status", status);
+    .eq("status", status)
+    .eq("telegram_chat_id", String(chatId));
   return count ?? 0;
 }
 
 async function sendQueueStatus(chatId: number) {
   const [pending, waiting, errors] = await Promise.all([
-    countByStatus("pending"),
-    countByStatus("waiting_user"),
-    countByStatus("error"),
+    countByStatus("pending", chatId),
+    countByStatus("waiting_user", chatId),
+    countByStatus("error", chatId),
   ]);
 
   if (pending + waiting + errors === 0) {
@@ -125,8 +129,9 @@ async function sendQueueStatus(chatId: number) {
   const lines = ["📋 Situação da fila:"];
   if (pending > 0) lines.push(`• ${pending} aguardando processamento`);
   if (waiting > 0) lines.push(`• ${waiting} esperando resposta sua`);
-  if (errors > 0) lines.push(`• ${errors} com erro (revisão manual)`);
+  if (errors > 0) lines.push(`• ${errors} com erro`);
   if (pending > 0) lines.push("\nEnvie /processar para rodar agora sem esperar o cron.");
+  if (waiting + errors > 0) lines.push("Envie /revisar para resolver.");
   await tg("sendMessage", { chat_id: chatId, text: lines.join("\n") });
 }
 
@@ -328,55 +333,21 @@ const REPORT_COMMANDS = new Set(["/relatorio", "relatorio", "ultimo relatorio"])
 const ANALYZE_COMMANDS = new Set(["/analisar", "analisar agora"]);
 const TAXONOMY_COMMANDS = new Set(["/taxonomia", "taxonomia", "candidatos de taxonomia"]);
 
-interface PendingExpense {
-  id: string;
-  merchant: string | null;
-  amount: number;
-  currency: string;
-  image_url: string | null;
-  raw_input: string | null;
-  parsed_data: Record<string, unknown> | null;
-  telegram_chat_id: string | null;
-}
-
-// merchant/amount/currency have no flat columns on pending_expenses — they
-// only exist inside parsed_data (jsonb) until the row is resolved into
-// `expenses`. Reviewable rows are always 'waiting_user' (Gemini already ran
-// and flagged them); 'pending' rows haven't been parsed yet.
-type PendingExpenseRow = {
-  id: string;
-  image_url: string | null;
-  raw_input: string | null;
-  parsed_data: Record<string, unknown> | null;
-  telegram_chat_id: string | null;
-};
-
-function toPendingExpense(row: PendingExpenseRow): PendingExpense {
-  const parsed = row.parsed_data ?? {};
-  return {
-    id: row.id,
-    merchant: (parsed.merchant as string | null | undefined) ?? null,
-    amount: (parsed.amount as number | undefined) ?? 0,
-    currency: (parsed.currency as string | undefined) ?? "BRL",
-    image_url: row.image_url,
-    raw_input: row.raw_input,
-    parsed_data: row.parsed_data,
-    telegram_chat_id: row.telegram_chat_id,
-  };
-}
-
-async function fetchPendingForReview(chatId: number): Promise<PendingExpense[]> {
-  const { data, error } = await supabase
-    .from("pending_expenses")
-    .select("id, image_url, raw_input, parsed_data, telegram_chat_id")
-    .eq("status", "waiting_user")
-    .eq("telegram_chat_id", String(chatId))
-    .order("created_at");
+// The single definition of "reviewable" (waiting_user + error, scoped to
+// this chat) lives in get_pending_review_queue() — see migration
+// 20260930000009 — so /revisar and the daily reminder can never again
+// disagree about what there is to review. null means the query itself
+// failed, distinct from an empty (genuinely nothing to review) result —
+// callers must not conflate the two.
+async function fetchPendingForReview(chatId: number): Promise<ReviewQueueRow[] | null> {
+  const { data, error } = await supabase.rpc("get_pending_review_queue", {
+    p_chat_id: String(chatId),
+  });
   if (error) {
     console.error("fetch pending failed:", error);
-    return [];
+    return null;
   }
-  return (data ?? []).map(toPendingExpense);
+  return (data ?? []) as ReviewQueueRow[];
 }
 
 async function getSuggestedCategories(merchant: string | null, amount: number): Promise<Array<{ id: string; name: string; confidence: number }>> {
@@ -397,56 +368,27 @@ async function getSuggestedCategories(merchant: string | null, amount: number): 
   }));
 }
 
-function formatReviewMessage(pending: PendingExpense, suggestions: Array<{ id: string; name: string; confidence: number }>): string {
-  const merchant = pending.merchant ?? "Despesa";
-  let msg = `📋 ${merchant} — R$ ${pending.amount.toFixed(2)} ${pending.currency}\n`;
-
-  if (pending.parsed_data?.items && Array.isArray(pending.parsed_data.items)) {
-    const items = pending.parsed_data.items as Array<{ description?: string }>;
-    if (items.length > 0) {
-      msg += `Itens: ${items.map((i) => i.description).join(", ")}\n`;
-    }
-  }
-
-  if (suggestions.length > 0) {
-    msg += "\n💡 Categorias sugeridas:\n";
-    suggestions.forEach((s, i) => {
-      msg += `${i + 1}. ${s.name} (${(s.confidence * 100).toFixed(0)}%)\n`;
-    });
-  }
-
-  return msg;
-}
-
-async function sendReviewMessage(chatId: number, pending: PendingExpense, suggestions: Array<{ id: string; name: string; confidence: number }>) {
-  const msg = formatReviewMessage(pending, suggestions);
-
-  const keyboard = {
-    inline_keyboard: [
-      [
-        { text: "👁️ Ver nota", callback_data: `ver:${pending.id}` },
-        { text: "📝 Classificar", callback_data: `classificar:${pending.id}` },
-      ],
-      [
-        { text: "✏️ Corrigir valor", callback_data: `corrigir:${pending.id}` },
-        { text: "✅ Confirmar", callback_data: `confirmar:${pending.id}` },
-      ],
-      [
-        { text: "⏰ Mais tarde", callback_data: `depois:${pending.id}` },
-        { text: "🗑️ Descartar", callback_data: `descartar:${pending.id}` },
-      ],
-    ],
-  };
-
-  await tg("sendMessage", {
-    chat_id: chatId,
-    text: msg,
-    reply_markup: keyboard,
-  });
+async function sendReviewCard(chatId: number, row: ReviewQueueRow) {
+  // Suggestions need a merchant to match against, which 'error' rows never
+  // have (parsing never ran to completion) — buildReviewCard already hides
+  // Classificar for them, so skip the RPC call too.
+  const suggestions = row.status === "waiting_user"
+    ? await getSuggestedCategories(merchantOf(row), amountOf(row))
+    : [];
+  const { text, keyboard } = buildReviewCard(row, suggestions);
+  await tg("sendMessage", { chat_id: chatId, text, reply_markup: keyboard });
 }
 
 async function startReview(chatId: number) {
   const pending = await fetchPendingForReview(chatId);
+
+  if (pending === null) {
+    await tg("sendMessage", {
+      chat_id: chatId,
+      text: "⚠️ Não consegui consultar a fila — tente de novo em um instante.",
+    });
+    return;
+  }
 
   if (pending.length === 0) {
     await tg("sendMessage", {
@@ -458,13 +400,10 @@ async function startReview(chatId: number) {
 
   await tg("sendMessage", {
     chat_id: chatId,
-    text: `📌 Você tem ${pending.length} gastos para revisar`,
+    text: `📌 Você tem ${pending.length} gasto${pending.length === 1 ? "" : "s"} para revisar`,
   });
 
-  // Show the first one
-  const first = pending[0];
-  const suggestions = await getSuggestedCategories(first.merchant, first.amount);
-  await sendReviewMessage(chatId, first, suggestions);
+  await sendReviewCard(chatId, pending[0]);
 }
 
 // Chat commands are intercepted before ingestion — otherwise the text would
@@ -532,6 +471,22 @@ async function handleQuestionReply(msg: TelegramMessage): Promise<boolean> {
   return true;
 }
 
+// After confirming/discarding/retrying one row, show whatever this chat has
+// left to review — skipping the one just acted on, since its own update
+// may not have landed before get_pending_review_queue() re-reads it.
+async function showNextPending(chatId: number, justHandledId: string) {
+  const remaining = await fetchPendingForReview(chatId);
+  if (!remaining) return;
+  const next = remaining.filter((row) => row.id !== justHandledId);
+  if (next.length === 0) return;
+
+  await tg("sendMessage", {
+    chat_id: chatId,
+    text: `\nPróxima (${next.length} restando):`,
+  });
+  await sendReviewCard(chatId, next[0]);
+}
+
 async function handleCallback(cq: TelegramCallbackQuery) {
   const chatId = cq.message?.chat.id;
   if (!chatId || !ALLOWED_CHAT_IDS.has(String(chatId))) return;
@@ -564,6 +519,7 @@ async function handleCallback(cq: TelegramCallbackQuery) {
       .from("pending_expenses")
       .select("id, parsed_data")
       .eq("id", pendingId)
+      .eq("telegram_chat_id", String(chatId))
       .eq("status", "waiting_user")
       .maybeSingle();
 
@@ -601,13 +557,16 @@ async function handleCallback(cq: TelegramCallbackQuery) {
       }
     }
   }
-  // Review flow callbacks
+  // Review flow callbacks — every one scoped to the chat that clicked, so a
+  // permitted chat cannot act on another sender's pendência just by
+  // guessing or replaying an id.
   else if (kind === "ver") {
     // Show the image/text
     const { data: pending } = await supabase
       .from("pending_expenses")
       .select("image_url, raw_input")
       .eq("id", pendingId)
+      .eq("telegram_chat_id", String(chatId))
       .maybeSingle();
 
     if (pending?.image_url) {
@@ -632,6 +591,7 @@ async function handleCallback(cq: TelegramCallbackQuery) {
       .from("pending_expenses")
       .select("parsed_data")
       .eq("id", pendingId)
+      .eq("telegram_chat_id", String(chatId))
       .maybeSingle();
 
     if (pending) {
@@ -661,23 +621,26 @@ async function handleCallback(cq: TelegramCallbackQuery) {
       .from("pending_expenses")
       .select("parsed_data")
       .eq("id", pendingId)
+      .eq("telegram_chat_id", String(chatId))
       .maybeSingle();
     const { error } = await supabase
       .from("pending_expenses")
       .update({ parsed_data: { ...(current?.parsed_data ?? {}), category_id: categoryId } })
-      .eq("id", pendingId);
+      .eq("id", pendingId)
+      .eq("telegram_chat_id", String(chatId));
 
     if (!error) {
       const { data: pending } = await supabase
         .from("pending_expenses")
-        .select("id, image_url, raw_input, parsed_data, telegram_chat_id")
+        .select("id, status, image_url, raw_input, parsed_data, telegram_chat_id, attempts, created_at")
         .eq("id", pendingId)
+        .eq("telegram_chat_id", String(chatId))
         .maybeSingle();
 
       if (pending) {
-        const expense = toPendingExpense(pending as PendingExpenseRow);
-        const suggestions = await getSuggestedCategories(expense.merchant, expense.amount);
-        newText = formatReviewMessage(expense, suggestions);
+        const row = { ...pending, age_hours: 0 } as ReviewQueueRow;
+        const suggestions = await getSuggestedCategories(merchantOf(row), amountOf(row));
+        newText = buildReviewCard(row, suggestions).text;
         answerText = "✅ Categoria salva";
       }
     } else {
@@ -696,7 +659,8 @@ async function handleCallback(cq: TelegramCallbackQuery) {
       await supabase
         .from("pending_expenses")
         .update({ question_message_id: sentMessageId, status: "waiting_user" })
-        .eq("id", pendingId);
+        .eq("id", pendingId)
+        .eq("telegram_chat_id", String(chatId));
       answerText = "Digite o novo valor e eu salvo";
     } else {
       answerText = "Falha ao iniciar correção — tente de novo.";
@@ -707,6 +671,7 @@ async function handleCallback(cq: TelegramCallbackQuery) {
       .from("pending_expenses")
       .select("id, parsed_data")
       .eq("id", pendingId)
+      .eq("telegram_chat_id", String(chatId))
       .maybeSingle();
 
     if (pending) {
@@ -726,21 +691,40 @@ async function handleCallback(cq: TelegramCallbackQuery) {
 
       if (!error) {
         newText = "✅ Confirmado e registrado.";
-        // Show next pending (if any)
-        const allPending = await fetchPendingForReview(chatId);
-        const remaining = allPending.filter((p) => p.id !== pendingId);
-        if (remaining.length > 0) {
-          await tg("sendMessage", {
-            chat_id: chatId,
-            text: `\nPróxima (${remaining.length} restando):`,
-          });
-          const next = remaining[0];
-          const suggestions = await getSuggestedCategories(next.merchant, next.amount);
-          await sendReviewMessage(chatId, next, suggestions);
-        }
+        await showNextPending(chatId, pendingId);
       } else {
         answerText = "Falha ao confirmar";
       }
+    }
+  } else if (kind === "retry") {
+    // 'error' rows exhausted the worker's retries with no amount/merchant
+    // to confirm — there's nothing to review, only a transient failure to
+    // retry. Clearing attempts and the stashed error re-queues it as
+    // 'pending' for the next process-receipts tick.
+    const { data: pending } = await supabase
+      .from("pending_expenses")
+      .select("id, parsed_data")
+      .eq("id", pendingId)
+      .eq("telegram_chat_id", String(chatId))
+      .eq("status", "error")
+      .maybeSingle();
+
+    if (pending) {
+      const parsed = { ...(pending.parsed_data ?? {}) } as Record<string, unknown>;
+      delete parsed.error;
+      const { error } = await supabase
+        .from("pending_expenses")
+        .update({ status: "pending", attempts: 0, parsed_data: parsed })
+        .eq("id", pendingId);
+
+      if (!error) {
+        newText = "🔄 Marcado para tentar de novo.";
+        await showNextPending(chatId, pendingId);
+      } else {
+        answerText = "Falha ao marcar para retentar";
+      }
+    } else {
+      answerText = "Essa pendência já foi tratada.";
     }
   } else if (kind === "depois") {
     // Just respond and leave
@@ -751,22 +735,12 @@ async function handleCallback(cq: TelegramCallbackQuery) {
     const { error } = await supabase
       .from("pending_expenses")
       .update({ status: "discarded" })
-      .eq("id", pendingId);
+      .eq("id", pendingId)
+      .eq("telegram_chat_id", String(chatId));
 
     if (!error) {
       newText = "🗑️ Descartado.";
-      // Show next pending
-      const allPending = await fetchPendingForReview(chatId);
-      const remaining = allPending.filter((p) => p.id !== pendingId);
-      if (remaining.length > 0) {
-        await tg("sendMessage", {
-          chat_id: chatId,
-          text: `\nPróxima (${remaining.length} restando):`,
-        });
-        const next = remaining[0];
-        const suggestions = await getSuggestedCategories(next.merchant, next.amount);
-        await sendReviewMessage(chatId, next, suggestions);
-      }
+      await showNextPending(chatId, pendingId);
     } else {
       answerText = "Falha ao descartar";
     }

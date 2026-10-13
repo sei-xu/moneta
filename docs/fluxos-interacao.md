@@ -210,14 +210,33 @@ sequenceDiagram
 
 ## Fluxo de correção (`/revisar`)
 
-O comando `/revisar` (e o card automático após cada novo recibo) lista as pendências do chat e oferece botões inline:
+O que é "revisável" tem uma única definição, usada tanto por `/revisar` quanto pelo lembrete diário:
+a RPC `get_pending_review_queue(p_chat_id)` (migração `20260930000009`), que devolve as pendências em
+`status in ('waiting_user', 'error')` do remetente pedido. Antes dessa RPC, cada lado tinha seu próprio
+filtro — o lembrete contava `pending`+`waiting_user` sem olhar o remetente e avisava sempre o mesmo chat
+fixo, enquanto `/revisar` listava só `waiting_user` do chat que pediu — e os dois conjuntos nunca se
+cruzavam, daí o lembrete dizer "10 para revisar" e `/revisar` dizer "nada a revisar".
 
-- **Ver nota** — reenvia a foto do recibo (signed URL) ou o texto original
-- **Classificar** — mostra as top-3 sugestões de `suggest_category_for_merchant()` como botões
-- **Corrigir valor** — pede um novo valor via `force_reply`; a resposta é capturada como pergunta pendente (`question_message_id` + `status='waiting_user'`) e reprocessada pelo worker com o valor corrigido como contexto
-- **Confirmar** — resolve via `resolve_pending_expense()` e mostra o próximo item da fila
-- **Mais tarde** — só fecha o card, sem mudar o status
-- **Descartar** — marca `status='discarded'` e mostra o próximo item
+O comando `/revisar` lista as pendências do chat que pediu e manda um card por vez. O card se adapta ao
+status da linha:
+
+- **`waiting_user`** (Gemini já rodou e tem `merchant`/`amount` em `parsed_data`) — card completo:
+  - **Ver nota** — reenvia a foto do recibo (signed URL) ou o texto original
+  - **Classificar** — mostra as top-3 sugestões de `suggest_category_for_merchant()` como botões
+  - **Corrigir valor** — pede um novo valor via `force_reply`; a resposta é capturada como pergunta pendente (`question_message_id` + `status='waiting_user'`) e reprocessada pelo worker com o valor corrigido como contexto
+  - **Confirmar** — resolve via `resolve_pending_expense()` e mostra o próximo item da fila
+  - **Mais tarde** — só fecha o card, sem mudar o status
+  - **Descartar** — marca `status='discarded'` e mostra o próximo item
+- **`error`** (esgotou as tentativas do worker — `parsed_data.error` guarda o motivo, sem `merchant`/`amount`
+  para confirmar ou classificar) — card reduzido:
+  - **Ver nota** — igual ao de cima
+  - **🔄 Tentar de novo** — zera `attempts`, remove `parsed_data.error` e volta o status para `pending`; o
+    próximo ciclo do `process-receipts` processa de novo
+  - **Descartar** — igual ao de cima
+
+Todo callback do fluxo de revisão (`ver`/`classificar`/`cat`/`corrigir`/`confirmar`/`descartar`/`retry`)
+filtra também por `telegram_chat_id` do chat que clicou — um chat da allowlist não consegue agir sobre a
+pendência de outro remetente.
 
 ## Estado das pendências
 
@@ -232,7 +251,8 @@ stateDiagram-v2
   waiting_user --> done: Usuário confirmou<br/>+ RPC resolve
   waiting_user --> discarded: Usuário descartou
 
-  error --> [*]: Revisão manual necessária
+  error --> pending: "🔄 Tentar de novo" via /revisar<br/>(attempts zerado)
+  error --> discarded: Usuário descartou via /revisar
   done --> [*]: Despesa criada em expenses
   discarded --> [*]: Sem ação
 ```
