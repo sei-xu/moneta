@@ -50,7 +50,7 @@ The backend half of this repo has no `package.json`, no build step and no linter
   - `duplicate_detection_log` — false positive/negative analysis
   - `audit_summary` — change tracking by source & type
 
-- **RPC Functions** (10 total):
+- **RPC Functions** (11 total):
   - `resolve_pending_expense()` — atomic expense + items insert (existing)
   - `create_manual_expense()` — create expense from app UI
   - `reclassify_expense()` — update category + audit
@@ -61,12 +61,13 @@ The backend half of this repo has no `package.json`, no build step and no linter
   - `get_analysis_context()` — pre-aggregated period context for the analysis prompt
   - `log_audit()` — insert audit trail entries
   - `review_taxonomy_candidate()` — approve/reject a `behavior_tags`/`categories` candidate; the only write the app is allowed, gated on `app_users`
+  - `get_pending_review_queue(p_chat_id)` — the one definition of "reviewable" (`status in ('waiting_user', 'error')`, optionally scoped to one sender); `service_role` only, see "The review queue" below
 
 ### Edge Functions
 - `supabase/functions/telegram-ingest/` — Telegram bot: receives receipts (photo + text), compresses images, uploads to bucket, creates `pending_expenses` entries, handles user Q&A (duplicate confirmation, detail requests, category selection via inline buttons), and `/taxonomia` for reviewing taxonomy candidates
 - `supabase/functions/process-receipts/` — Scheduled worker (pg_cron): fetches pending receipts, calls Gemini for parsing, detects duplicates, asks user for confirmation if needed, atomically resolves via RPC, respects free-tier rate limits & daily budget
 - `supabase/functions/analyze-expenses/` — Scheduled analysis (pg_cron): pre-aggregates a period via `get_analysis_context()`, sends it to an LLM in one call, stores a structured report, promotes `taxonomy_notes` into candidate `behavior_tags`/`categories` rows, and lets the model's `notification_decision` govern whether the user is notified
-- `supabase/functions/notify-pending-review/` — Daily reminder about pending receipts awaiting review
+- `supabase/functions/notify-pending-review/` — Daily reminder about pending receipts awaiting review; one message per sender, never a single fixed chat (see "The review queue" below)
 
 ### Documentation
 - `docs/pipeline-ia-recibos.md` — Architecture and design decisions
@@ -94,6 +95,13 @@ The backend half of this repo has no `package.json`, no build step and no linter
 - **Processing** (process-receipts): Batched (2 receipts/run), budget-capped (200/day free tier), retries up to 3x for transient failures, only after max attempts does row become `status='error'`
 - **Duplicate detection**: ±3 day window, fuzzy match on (amount, transaction_time, merchant), asks user to confirm before discarding
 - **User Q&A loop**: `needs_detail=true` or duplicate question → status='waiting_user', Telegram sends message, user responds via keyboard or reply, bot reclassifies and re-enqueues
+
+### The review queue
+- "Reviewable" has exactly one definition — `get_pending_review_queue(p_chat_id)` (migration `20260930000009`), `status in ('waiting_user', 'error')`, optionally scoped to one sender. Both `notify-pending-review` and `/revisar` call it; neither re-implements the filter. `pending` rows are excluded — they have not been parsed yet, so there is nothing for a human to confirm
+- `error` rows (worker exhausted its retries) are reviewable too, with a reduced card: no amount/merchant was ever parsed, so there is nothing to Confirmar/Classificar — only "🔄 Tentar de novo" (resets `attempts` to 0, clears `parsed_data.error`, status back to `pending`), "Ver nota" and "Descartar"
+- The daily reminder sends one message **per sender** with that sender's own reviewable count — never a single fixed chat told a number that mixes in other people's rows. A row with no `telegram_chat_id`, or whose sender is outside `TELEGRAM_ALLOWED_CHAT_IDS`, cannot be attributed to anyone, so it is folded as an orphan count into the first notified chat's message instead of going unmentioned
+- Every `/revisar` callback (`ver`/`classificar`/`cat`/`corrigir`/`confirmar`/`descartar`/`retry`) filters by the clicking chat's `telegram_chat_id`, so one allowed chat cannot act on another sender's row
+- Pure logic (grouping by sender, the age gate that decides *whether* to notify, card rendering) lives in `supabase/functions/_shared/review_queue.ts`, exercised by `deno test supabase/functions/_shared/` with no network or Supabase client involved
 
 ### Audit Trail
 - Every data change logged: who/what/when/why (via `log_audit()` RPC or Edge Functions)
